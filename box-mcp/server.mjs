@@ -95,6 +95,40 @@ function resolveAllowed(rawPath, roots) {
   return null;
 }
 
+/* --- secret-path guard -------------------------------------------------
+   Even though env files are root:root 0600 (unreadable by the MCP user),
+   never allow the tools to name them at all. Also block ssh/gnupg/git
+   metadata, key material, and any path that resolves through a symlink
+   to outside the allowed roots. Belt and braces: the filesystem already
+   denies these reads; this keeps them out of listings and error paths. */
+const SECRET_BASENAME =
+  /^(\.env(\..*)?|env|\.netrc|\.npmrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519).*|.*\.(pem|key|pfx|p12|jks))$/i;
+const BLOCKED_SEGMENTS = new Set([".ssh", ".gnupg", ".git", ".aws", ".config", "secrets"]);
+
+function isSecretPath(target) {
+  const parts = path.resolve(target).split(path.sep);
+  const base = parts[parts.length - 1] || "";
+  if (SECRET_BASENAME.test(base)) return true;
+  return parts.some((seg) => BLOCKED_SEGMENTS.has(seg));
+}
+
+function realEscape(target, roots) {
+  // returns true when the real (symlink-resolved) path escapes the roots
+  try {
+    const real = fs.realpathSync(target);
+    return !roots.some((root) => inside(real, root));
+  } catch {
+    // path does not exist (writes): resolve the parent instead
+    try {
+      const realParent = fs.realpathSync(path.dirname(path.resolve(target)));
+      const asIfReal = path.join(realParent, path.basename(path.resolve(target)));
+      return !roots.some((root) => inside(asIfReal, root));
+    } catch {
+      return false; // parent missing: fs call will fail on its own
+    }
+  }
+}
+
 function text(value) {
   return { content: [{ type: "text", text: String(value) }] };
 }
@@ -243,9 +277,11 @@ const TOOLS = {
     async handler(args) {
       const target = resolveAllowed(args.path, READ_ROOTS);
       if (!target) return fail("path is outside the allowed roots");
+      if (isSecretPath(target) || realEscape(target, READ_ROOTS)) return fail("path is not accessible");
       try {
         const entries = await fs.readdir(target, { withFileTypes: true });
         const lines = entries
+          .filter((entry) => !isSecretPath(path.join(target, entry.name)))
           .sort((a, b) => a.name.localeCompare(b.name))
           .slice(0, 400)
           .map((entry) => (entry.isDirectory() ? "[dir]  " : "[file] ") + entry.name);
@@ -272,6 +308,7 @@ const TOOLS = {
       let target = resolveAllowed(raw, READ_ROOTS);
       if (!target && READABLE_FILES.includes(path.resolve(raw))) target = path.resolve(raw);
       if (!target) return fail("path is outside the allowed roots");
+      if (isSecretPath(target) || realEscape(target, READ_ROOTS)) return fail("path is not accessible");
       try {
         const stat = await fs.stat(target);
         if (!stat.isFile()) return fail("not a regular file");
@@ -300,6 +337,7 @@ const TOOLS = {
     async handler(args) {
       const target = resolveAllowed(args.path, WRITE_ROOTS);
       if (!target) return fail("path is outside the writable roots");
+      if (isSecretPath(target) || realEscape(target, WRITE_ROOTS)) return fail("path is not accessible");
       const content = String(args.content || "");
       if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) return fail("content too large");
       try {
