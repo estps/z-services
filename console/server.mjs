@@ -18,6 +18,11 @@ const ADMIN_IDS = new Set(
 const SITE = path.join(path.dirname(fileURLToPath(import.meta.url)), "site");
 const DEPLOY_LOG = "/srv/zchat/deploy.log";
 
+const PORTAL_ORIGIN = process.env.PORTAL_ORIGIN || "https://z-chat.men";
+const SELF_ORIGIN = process.env.SELF_ORIGIN || "https://access.z-chat.men";
+const OAUTH_REDIRECT = process.env.OAUTH_REDIRECT || `${SELF_ORIGIN}/auth/callback`;
+const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || "z-console";
+
 const UNITS = [
   "zchat-app",
   "zchat-build",
@@ -61,7 +66,8 @@ function cookie(req) {
   return part ? part.slice("zc_admin=".length) : null;
 }
 function session(req) {
-  return verify(cookie(req));
+  const data = verify(cookie(req));
+  return data && data.kind === "session" ? data : null;
 }
 
 function run(cmd, args, opts = {}) {
@@ -116,6 +122,171 @@ async function supabaseProfile(accessToken, userId) {
   return rows?.[0] ?? null;
 }
 
+/* ---------------- OAuth: Sign in with Z Chat (same consent flow as Z Games/Z Slides) ---------------- */
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0) out[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function secureFlag(req) {
+  return (req.headers["x-forwarded-proto"] || "") === "https" ? "; Secure" : "";
+}
+
+function handleAuthLogin(req, res) {
+  const state = crypto.randomBytes(16).toString("hex");
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  const location =
+    `${PORTAL_ORIGIN}/oauth/consent` +
+    `?client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT)}` +
+    `&state=${state}` +
+    `&code_challenge=${challenge}` +
+    `&code_challenge_method=S256` +
+    `&approve_url=${encodeURIComponent(`${SELF_ORIGIN}/api/oauth/approve`)}`;
+  const secure = secureFlag(req);
+  res.writeHead(302, {
+    Location: location,
+    "Set-Cookie": [
+      `zc_state=${state}; HttpOnly; Path=/; SameSite=Lax; Max-Age=600${secure}`,
+      `zc_verifier=${verifier}; HttpOnly; Path=/; SameSite=Lax; Max-Age=600${secure}`,
+    ],
+    "Cache-Control": "no-store",
+  });
+  res.end();
+}
+
+async function handleApproveOauth(req, res) {
+  const cors = {
+    "Access-Control-Allow-Origin": PORTAL_ORIGIN,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Max-Age": "600",
+    "Cache-Control": "no-store",
+  };
+  try {
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, cors);
+      return res.end();
+    }
+    if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" }, cors);
+    const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "");
+    if (!match) return json(res, 401, { error: "missing_token" }, cors);
+    let user = null;
+    try {
+      const r = await fetch(`${SUPA_URL}/auth/v1/user`, {
+        headers: { apikey: SUPA_ANON, Authorization: `Bearer ${match[1]}` },
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.id) user = { id: d.id, email: d.email };
+      }
+    } catch {
+      /* invalid_token below */
+    }
+    if (!user) return json(res, 401, { error: "invalid_token" }, cors);
+
+    let adminOk = ADMIN_IDS.has(user.id);
+    try {
+      const r = await fetch(
+        `${SUPA_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=is_admin,banned,timeout_until`,
+        { headers: { apikey: SUPA_ANON, Authorization: `Bearer ${match[1]}` } },
+      );
+      if (r.ok) {
+        const rows = await r.json();
+        const profile = Array.isArray(rows) ? rows[0] : null;
+        if (profile?.banned) return json(res, 403, { error: "banned" }, cors);
+        if (profile?.timeout_until && Date.parse(profile.timeout_until) > Date.now()) {
+          return json(res, 403, { error: "timed_out" }, cors);
+        }
+        if (profile?.is_admin === true) adminOk = true;
+      }
+    } catch {
+      /* keep ADMIN_IDS fallback */
+    }
+    if (!adminOk) return json(res, 403, { error: "not_admin" }, cors);
+
+    const raw = (await readBody(req)) || "{}";
+    let body = null;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = null;
+    }
+    if (!body || typeof body !== "object") return json(res, 400, { error: "bad_request" }, cors);
+    const redirectUri = String(body.redirect_uri || "");
+    const state = String(body.state || "");
+    const challenge = String(body.code_challenge || "");
+    if (redirectUri !== OAUTH_REDIRECT) return json(res, 400, { error: "bad_redirect_uri" }, cors);
+    if (!challenge || challenge.length > 200) return json(res, 400, { error: "bad_challenge" }, cors);
+    const payload = Buffer.from(
+      JSON.stringify({
+        kind: "code",
+        uid: user.id,
+        email: user.email,
+        ch: challenge,
+        exp: Date.now() + 5 * 60_000,
+      }),
+    ).toString("base64url");
+    const code = sign(payload);
+    const redirect = `${redirectUri}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    return json(res, 200, { redirect }, cors);
+  } catch (e) {
+    return json(res, 500, { error: "server_error" }, cors);
+  }
+}
+
+function authFail(res, status, message) {
+  const safe = String(message).replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]),
+  );
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Sign-in failed</title></head><body style="font-family:system-ui;background:#0b0d12;color:#e8eaf0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="max-width:26rem;text-align:center"><h2>Sign-in failed</h2><p style="color:#9aa3b2">${safe}</p><p><a style="color:#7aa2ff" href="/auth/login">Try again</a></p></div></body></html>`,
+  );
+}
+
+function handleAuthCallback(req, res) {
+  const url = new URL(req.url, "http://localhost");
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const cookies = parseCookies(req);
+  if (url.searchParams.get("error")) return authFail(res, 400, "Sign-in was cancelled.");
+  if (!code) return authFail(res, 400, "Missing authorization code.");
+  if (!state || !cookies.zc_state || state !== cookies.zc_state) {
+    return authFail(res, 403, "Invalid state - please try signing in again.");
+  }
+  if (!cookies.zc_verifier) return authFail(res, 400, "Missing PKCE verifier - please try again.");
+  const data = verify(code);
+  if (!data || data.kind !== "code") {
+    return authFail(res, 400, "This sign-in link is invalid or expired. Please try again.");
+  }
+  const challenge = crypto.createHash("sha256").update(cookies.zc_verifier).digest("base64url");
+  if (!data.ch || data.ch !== challenge) {
+    return authFail(res, 403, "Could not verify the sign-in request. Please try again.");
+  }
+  const payload = Buffer.from(
+    JSON.stringify({ kind: "session", uid: data.uid, email: data.email, exp: Date.now() + 12 * 3600_000 }),
+  ).toString("base64url");
+  const secure = secureFlag(req);
+  res.writeHead(302, {
+    Location: "/",
+    "Set-Cookie": [
+      `zc_admin=${sign(payload)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=43200${secure}`,
+      `zc_state=; HttpOnly; Path=/; Max-Age=0${secure}`,
+      `zc_verifier=; HttpOnly; Path=/; Max-Age=0${secure}`,
+    ],
+    "Cache-Control": "no-store",
+  });
+  res.end();
+}
+
 async function health() {
   const services = [];
   for (const unit of UNITS) {
@@ -147,6 +318,10 @@ const server = http.createServer(async (req, res) => {
       return res.end(html);
     }
 
+    if (req.method === "GET" && p === "/auth/login") return handleAuthLogin(req, res);
+    if (p === "/api/oauth/approve") return handleApproveOauth(req, res);
+    if (req.method === "GET" && p === "/auth/callback") return handleAuthCallback(req, res);
+
     if (req.method === "POST" && p === "/api/login") {
       const csrf = req.headers["x-zc"];
       if (csrf !== "console") return json(res, 400, { error: "bad request" });
@@ -161,7 +336,7 @@ const server = http.createServer(async (req, res) => {
       const isAdmin = profile?.is_admin === true || ADMIN_IDS.has(token.user.id);
       if (!isAdmin) return json(res, 403, { error: "Not an admin account" });
       const payload = Buffer.from(
-        JSON.stringify({ uid: token.user.id, email, exp: Date.now() + 12 * 3600_000 }),
+        JSON.stringify({ kind: "session", uid: token.user.id, email, exp: Date.now() + 12 * 3600_000 }),
       ).toString("base64url");
       const secure = (req.headers["x-forwarded-proto"] || "") === "https" ? "; Secure" : "";
       return json(

@@ -40,6 +40,8 @@
 
   <div class="card" id="loginCard">
     <h2>Sign in (admin only)</h2>
+    <button class="primary" id="oauthBtn" style="width:100%;padding:11px 14px">Sign in with Z Chat</button>
+    <div class="muted" style="margin:14px 0 10px;text-align:center">or use email + password</div>
     <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
     <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
     <div class="msg" id="loginMsg"></div>
@@ -136,6 +138,7 @@
     if (status !== 200) return ($("loginMsg").textContent = body.error || "Login failed");
     await showDash();
   };
+  $("oauthBtn").onclick = () => { location.href = "/auth/login"; };
   $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
   $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); };
   $("logoutBtn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
