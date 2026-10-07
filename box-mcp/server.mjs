@@ -216,10 +216,11 @@ const TOOLS = {
         if (action === "stop") {
           return fail("cannot stop zbox-mcp.service through the MCP - it would not come back");
         }
-        const queued = await run("systemctl", ["--no-block", action, unit], 10000);
-        if (!queued.ok) {
-          return fail(`${action} ${unit} failed: ${queued.stderr.trim() || queued.stdout.trim() || "unknown error"}`);
-        }
+        /* Fire-and-forget: give the job a moment to reach systemd, then answer
+           before the service cycles (the cycle kills this process, so waiting
+           on systemctl here would always lose the race). */
+        execFile("systemctl", ["--no-block", action, unit], { timeout: 10000 }, () => {});
+        await new Promise((resolve) => setTimeout(resolve, 300));
         return text(`${action} ${unit} queued - this MCP is restarting itself; it will be back in a few seconds.`);
       }
       const result = await run("systemctl", [action, unit], 30000);
