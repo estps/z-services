@@ -43,7 +43,7 @@ const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
 const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
 const CANVA_GENERATIONS_URL = "https://api.canva.com/rest/v1/generations";
 const CANVA_CAPS_URL = "https://api.canva.com/rest/v1/users/me/capabilities";
-const CANVA_SCOPE = "design:content:write";
+const CANVA_SCOPE = "design:content:write profile:read";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
