@@ -61,7 +61,7 @@ const READ_ROOTS = [
   "/srv/zgames/state",
   "/srv/zgames/site",
 ];
-const WRITE_ROOTS = ["/srv/zslides", "/srv/zbox-mcp", "/srv/zservices"];
+const WRITE_ROOTS = ["/srv/zslides", "/srv/zbox-mcp", "/srv/zservices", "/srv/zgames/site"];
 
 const READABLE_FILES = [
   "/srv/zchat/deploy.log",
