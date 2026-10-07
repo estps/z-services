@@ -41,6 +41,8 @@ const CANVA_REDIRECT = process.env.CANVA_REDIRECT || `${SELF_ORIGIN}/auth/canva/
 const CANVA_AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize";
 const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
 const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
+const CANVA_GENERATIONS_URL = "https://api.canva.com/rest/v1/generations";
+const CANVA_CAPS_URL = "https://api.canva.com/rest/v1/users/me/capabilities";
 const CANVA_SCOPE = "design:content:write";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
@@ -506,7 +508,68 @@ async function startCanvaImport(deck, uid) {
     console.error("[zslides] canva import start failed:", response.status, JSON.stringify(data).slice(0, 300));
     return null;
   }
-  return { jobId: data.job?.id || null, status: data.job?.status || "in_progress" };
+  return { kind: "import", jobId: data.job?.id || null, status: data.job?.status || "in_progress" };
+}
+
+function hasGenerationCapability(payload) {
+  const list = payload && Array.isArray(payload.capabilities) ? payload.capabilities : [];
+  return list.some((entry) => {
+    if (typeof entry === "string") return entry === "design_generation";
+    if (entry && typeof entry === "object") {
+      const name = entry.name || entry.type || entry.capability || entry.id;
+      if (name !== "design_generation") return false;
+      return entry.available !== false;
+    }
+    return false;
+  });
+}
+
+/* Prefer Canva's native design generation (the user's Canva AI builds the
+   presentation from our outline, fully native + editable). Falls back to
+   importing our PPTX export when the capability or credits aren't available. */
+async function startCanvaDesign(deck, uid) {
+  const token = await canvaAccessToken(uid);
+  if (!token) return null;
+  let generationAvailable = false;
+  try {
+    const capsResponse = await fetch(CANVA_CAPS_URL, { headers: { Authorization: `Bearer ${token}` } });
+    if (capsResponse.ok) {
+      generationAvailable = hasGenerationCapability(await capsResponse.json().catch(() => null));
+    }
+  } catch {
+    /* fall back to import */
+  }
+  if (generationAvailable) {
+    const sections = deck.slides.map((slide) => {
+      const bullets = Array.isArray(slide.bullets) ? slide.bullets : [];
+      const description = (bullets.join(". ") || slide.title || "Slide").slice(0, 2000);
+      return {
+        title: String(slide.title || "Untitled").slice(0, 255) || "Untitled",
+        description: description || "Slide",
+        points: bullets.map((b) => String(b).slice(0, 1000)).slice(0, 50),
+      };
+    });
+    const brief = `${deck.title}. ${deck.details}`.slice(0, 5000);
+    try {
+      const response = await fetch(CANVA_GENERATIONS_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          design_type: { type: "preset", name: "presentation" },
+          outline: { sections },
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        return { kind: "generation", jobId: data.job?.id || null, status: data.job?.status || "in_progress" };
+      }
+      console.error("[zslides] canva native generation unavailable:", response.status, JSON.stringify(data).slice(0, 200));
+    } catch (err) {
+      console.error("[zslides] canva native generation failed:", err);
+    }
+  }
+  return startCanvaImport(deck, uid);
 }
 
 /* ---------------- Canva OAuth routes ---------------- */
@@ -642,13 +705,13 @@ async function handleGenerate(req, res, user) {
   await writeJson(deckPath, deck);
   /* If the user connected Canva, push the deck straight into their account. */
   try {
-    const canva = await startCanvaImport(deck, user.id);
+    const canva = await startCanvaDesign(deck, user.id);
     if (canva) {
       deck.canva = canva;
       await writeJson(deckPath, deck);
     }
   } catch (err) {
-    console.error("[zslides] canva import failed:", err);
+    console.error("[zslides] canva start failed:", err);
   }
   send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, JSON.stringify({ deck }));
 }
@@ -676,22 +739,24 @@ async function handleDeckCanva(req, res, user, id) {
     try {
       const token = await canvaAccessToken(user.id);
       if (token) {
-        const response = await fetch(`${CANVA_IMPORTS_URL}/${deck.canva.jobId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const isGeneration = deck.canva.kind === "generation";
+        const pollUrl = isGeneration
+          ? `${CANVA_GENERATIONS_URL}/${deck.canva.jobId}`
+          : `${CANVA_IMPORTS_URL}/${deck.canva.jobId}`;
+        const response = await fetch(pollUrl, { headers: { Authorization: `Bearer ${token}` } });
         const data = await response.json().catch(() => ({}));
         const job = data.job || {};
         if (job.status === "success") {
-          const design = (job.result && job.result.designs && job.result.designs[0]) || null;
-          deck.canva = {
-            jobId: deck.canva.jobId,
-            status: "success",
-            editUrl: (design && design.urls && design.urls.edit_url) || null,
-            viewUrl: (design && design.urls && design.urls.view_url) || null,
-          };
+          const design = isGeneration
+            ? (job.result && job.result.design) || null
+            : (job.result && job.result.designs && job.result.designs[0]) || null;
+          deck.canva.status = "success";
+          deck.canva.editUrl = (design && design.urls && design.urls.edit_url) || null;
+          deck.canva.viewUrl = (design && design.urls && design.urls.view_url) || null;
           await writeJson(deckPath, deck);
         } else if (job.status === "failed") {
-          deck.canva = { jobId: deck.canva.jobId, status: "failed", error: (job.error && job.error.code) || "import_failed" };
+          deck.canva.status = "failed";
+          deck.canva.error = (job.error && job.error.code) || "generation_failed";
           await writeJson(deckPath, deck);
         }
       }
