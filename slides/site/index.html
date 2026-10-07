@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Z Slides — AI presentations</title>
+  <meta name="color-scheme" content="dark" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236d5cff'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='system-ui' font-weight='700'>Z</text></svg>" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">Z</span>
+        <div>
+          <p class="brand-name">Z Slides</p>
+          <p class="brand-sub">AI presentations</p>
+        </div>
+      </div>
+
+      <button id="newBtn" class="btn btn-primary">New presentation</button>
+
+      <div class="quota" id="quota">Loading…</div>
+
+      <nav class="decklist" id="decklist"></nav>
+
+      <div class="sidebar-foot">
+        <div class="account" id="account"></div>
+        <a class="logout" href="/auth/logout">Sign out</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section id="empty" class="empty">
+        <h1>Make a deck in seconds</h1>
+        <p>Describe your presentation, pick the page count, and the AI writes every slide. Your first three decks are free.</p>
+        <button class="btn btn-primary" id="emptyNewBtn">New presentation</button>
+      </section>
+
+      <section id="viewer" class="viewer" hidden>
+        <header class="viewer-head">
+          <div>
+            <h2 id="deckTitle">—</h2>
+            <p class="viewer-meta" id="deckMeta"></p>
+          </div>
+          <button class="btn btn-ghost" id="copyBtn">Copy as text</button>
+        </header>
+        <div class="slides" id="slides"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="createDialog" class="dialog">
+    <form id="createForm" method="dialog">
+      <h2>New presentation</h2>
+      <label class="field">
+        <span>Who to invite <em>(emails, separated by commas)</em></span>
+        <input id="invitees" type="text" placeholder="sam@example.com, lee@example.com" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Details <em>(what should the presentation be about?)</em></span>
+        <textarea id="details" rows="5" maxlength="2000" placeholder="A 6-slide pitch for our school esports club: goals, schedule, roles, budget…" required></textarea>
+      </label>
+      <label class="field">
+        <span>Number of pages <em>(max 6)</em></span>
+        <input id="pages" type="range" min="1" max="6" value="6" />
+        <output id="pagesOut">6 pages</output>
+      </label>
+      <p id="formError" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="createBtn">Generate deck</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
