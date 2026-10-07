@@ -48,7 +48,7 @@ const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
 const ADMIN_IDS = new Set(
-  String(process.env.ADMIN_IDS || "da7f066b-073f-4e3e-aea6-bca04d1dfefb,cb01e8f4-55cb-4542-ad89-a3fadd77552d")
+  String(process.env.ADMIN_IDS || "")
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean)
@@ -762,6 +762,10 @@ async function prepareGeneration(user, body) {
   if (budget.usd >= MONTHLY_BUDGET_USD) {
     throw new GenerationError(503, "budget", "This month's AI budget is used up. Try again next month.");
   }
+  const canvaTokens = await getCanvaTokens(user.id);
+  if (!canvaTokens || !canvaTokens.refresh_token) {
+    throw new GenerationError(403, "canva_required", "Connect Canva first (bottom of the sidebar) - presentations are created in your Canva account.");
+  }
   return { details, pages, invitees };
 }
 
@@ -1142,6 +1146,10 @@ async function handleGenerate(req, res, user) {
   const budget = await getBudget();
   if (budget.usd >= MONTHLY_BUDGET_USD) {
     return send(req, res, 503, { "Content-Type": "application/json" }, JSON.stringify({ error: "budget", message: "This month's AI budget is used up. Try again next month." }));
+  }
+  const canvaTokens = await getCanvaTokens(user.id);
+  if (!canvaTokens || !canvaTokens.refresh_token) {
+    return send(req, res, 403, { "Content-Type": "application/json" }, JSON.stringify({ error: "canva_required", message: "Connect Canva first (bottom of the sidebar) - presentations are created in your Canva account." }));
   }
 
   let generated;

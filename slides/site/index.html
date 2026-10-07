@@ -58,6 +58,14 @@
 
   <dialog id="createDialog" class="dialog">
     <form id="createForm" method="dialog">
+      <div id="canvaGate" hidden>
+        <h2>Connect Canva first</h2>
+        <p class="build-status" id="canvaGateText">Presentations are created directly in your Canva account. Connect it once, then you can make decks anytime.</p>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" id="canvaGateClose">Close</button>
+          <a id="canvaGateBtn" class="btn btn-canva" href="/auth/canva">Connect Canva</a>
+        </div>
+      </div>
       <div id="createFields">
         <h2>New presentation</h2>
         <label class="field">

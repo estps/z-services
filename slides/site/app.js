@@ -23,8 +23,10 @@
   }
 
   function initials(name) {
-    var parts = String(name || "?").trim().split(/\s+/);
-    return ((parts[0] || "?")[0] + (parts[1] || "")[0] || "?").toUpperCase();
+    var parts = String(name || "?").trim().split(/\s+/).filter(Boolean);
+    var first = ((parts[0] || "?")[0] || "?").toUpperCase();
+    var second = parts[1] ? (parts[1][0] || "").toUpperCase() : "";
+    return first + second;
   }
 
   function renderAccount() {
@@ -205,6 +207,20 @@
 
   function openDialog() {
     $("formError").hidden = true;
+    var cutConfigured = state.canva && state.canva.configured;
+    var canvaOk = cutConfigured && state.canva.connected;
+    if (!canvaOk) {
+      $("createFields").hidden = true;
+      $("buildView").hidden = true;
+      $("canvaGate").hidden = false;
+      $("canvaGateText").textContent = cutConfigured
+        ? "Presentations are created directly in your Canva account. Connect it once, then you can make decks anytime."
+        : "Canva is not configured on this server yet, so presentations can't be created right now.";
+      $("canvaGateBtn").hidden = !cutConfigured;
+      dialog.showModal();
+      return;
+    }
+    $("canvaGate").hidden = true;
     var maxPages = (state.me && state.me.maxPages) || 6;
     pages.max = String(maxPages);
     $("pagesHint").textContent = "(max " + maxPages + ")";
@@ -219,9 +235,11 @@
   $("newBtn").addEventListener("click", openDialog);
   $("emptyNewBtn").addEventListener("click", openDialog);
   $("cancelBtn").addEventListener("click", function () { dialog.close(); });
+  $("canvaGateClose").addEventListener("click", function () { dialog.close(); });
 
   function startBuildView() {
     buildState.slides = 0;
+    $("canvaGate").hidden = true;
     $("createFields").hidden = true;
     $("buildView").hidden = false;
     $("buildTitle").textContent = "";
@@ -234,6 +252,7 @@
   function resetCreateView() {
     $("createFields").hidden = false;
     $("buildView").hidden = true;
+    $("canvaGate").hidden = true;
   }
 
   function buildError(message) {
