@@ -21,3 +21,7 @@ Z services use the custom Z Chat OAuth: the app redirects to
 access token to the app's own `/api/oauth/approve` endpoint (passed via the
 `approve_url` parameter), and the app verifies the token + ban status against
 Supabase before minting its own short-lived signed auth code (PKCE-bound).
+
+## Auto-push (Windows)
+
+`tools/autopush-windows.ps1` runs at logon and commits+pushes edits in the Z repos automatically (~40s debounce). Installed to `%USERPROFILE%\\.z-autopush` + Startup folder. Disable by removing `Startup\\ZAutoPush.cmd`.
