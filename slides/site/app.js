@@ -42,8 +42,27 @@
   function renderQuota(usage) {
     var q = $("quota");
     q.innerHTML = "";
+    if (state.me && state.me.unlimited) {
+      q.appendChild(el("span", "quota-num", "\u221E"));
+      q.appendChild(el("span", "quota-label", "unlimited decks"));
+      return;
+    }
     q.appendChild(el("span", "quota-num", String(usage.left)));
     q.appendChild(el("span", "quota-label", usage.left === 1 ? "free deck left" : "free decks left"));
+  }
+
+  function applyTheme(container, theme) {
+    if (!container) return;
+    if (theme && theme.bg) {
+      container.style.setProperty("--slide-bg", "#" + theme.bg);
+      container.style.setProperty("--slide-accent", "#" + theme.accent);
+      container.style.setProperty("--slide-text", "#" + theme.text);
+      container.style.setProperty("--slide-muted", "#" + theme.muted);
+    } else {
+      ["--slide-bg", "--slide-accent", "--slide-text", "--slide-muted"].forEach(function (name) {
+        container.style.removeProperty(name);
+      });
+    }
   }
 
   function renderDeckList() {
@@ -156,6 +175,7 @@
       var slides = $("slides");
       slides.innerHTML = "";
       data.deck.slides.forEach(function (slide, i) { slides.appendChild(slideCard(slide, i)); });
+      applyTheme(slides, data.deck.theme);
       renderCanvaBar(data.deck);
       renderDeckList();
     }).catch(function () { /* deck may have been removed */ });
@@ -181,10 +201,16 @@
 
   var dialog = $("createDialog");
   var form = $("createForm");
+  var buildState = { slides: 0 };
 
   function openDialog() {
     $("formError").hidden = true;
-    if (state.me && state.me.usageLeft <= 0) {
+    var maxPages = (state.me && state.me.maxPages) || 6;
+    pages.max = String(maxPages);
+    $("pagesHint").textContent = "(max " + maxPages + ")";
+    if (Number(pages.value) > maxPages) pages.value = String(maxPages);
+    $("pagesOut").textContent = pages.value + (pages.value === "1" ? " page" : " pages");
+    if (state.me && !state.me.unlimited && state.me.usageLeft <= 0) {
       $("formError").textContent = "You have used all of your free presentations.";
       $("formError").hidden = false;
     }
@@ -194,34 +220,97 @@
   $("emptyNewBtn").addEventListener("click", openDialog);
   $("cancelBtn").addEventListener("click", function () { dialog.close(); });
 
+  function startBuildView() {
+    buildState.slides = 0;
+    $("createFields").hidden = true;
+    $("buildView").hidden = false;
+    $("buildTitle").textContent = "";
+    $("buildStatus").textContent = "Starting\u2026";
+    $("buildSlides").innerHTML = "";
+    applyTheme($("buildSlides"), null);
+    $("buildClose").hidden = true;
+  }
+
+  function resetCreateView() {
+    $("createFields").hidden = false;
+    $("buildView").hidden = true;
+  }
+
+  function buildError(message) {
+    $("buildStatus").textContent = message || "Something went wrong. Try again.";
+    $("buildClose").hidden = false;
+  }
+
+  function handleBuildEvent(evt) {
+    if (evt.type === "meta") {
+      if (evt.title) $("buildTitle").textContent = evt.title;
+      if (evt.theme) applyTheme($("buildSlides"), evt.theme);
+    } else if (evt.type === "slide") {
+      $("buildSlides").appendChild(slideCard(evt.slide, evt.index || buildState.slides));
+      buildState.slides += 1;
+      var box = $("buildSlides");
+      box.scrollTop = box.scrollHeight;
+    } else if (evt.type === "status") {
+      $("buildStatus").textContent = evt.text || "";
+    } else if (evt.type === "done") {
+      $("buildStatus").textContent = "Done \u2014 opening\u2026";
+      window.setTimeout(function () {
+        dialog.close();
+        resetCreateView();
+        refresh().then(function () { openDeck(evt.deck.id); });
+      }, 700);
+    } else if (evt.type === "error") {
+      buildError(evt.message);
+    }
+  }
+
+  $("buildClose").addEventListener("click", function () {
+    dialog.close();
+    resetCreateView();
+  });
+
   var pages = $("pages");
   pages.addEventListener("input", function () { $("pagesOut").textContent = pages.value + (pages.value === "1" ? " page" : " pages"); });
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();
-    var btn = $("createBtn");
-    var errBox = $("formError");
-    errBox.hidden = true;
-    btn.disabled = true;
-    btn.textContent = "Generating… (up to 30s)";
-
     var invitees = $("invitees").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-    api("/api/generate", {
+    var payload = { invitees: invitees, details: $("details").value, pages: Number(pages.value) };
+    startBuildView();
+    fetch("/api/generate-stream", {
       method: "POST",
-      body: JSON.stringify({
-        invitees: invitees,
-        details: $("details").value,
-        pages: Number(pages.value),
-      }),
-    }).then(function (data) {
-      dialog.close();
-      refresh().then(function () { openDeck(data.deck.id); });
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          buildError(data.message || data.error || "Request failed");
+        });
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      function pump() {
+        return reader.read().then(function (result) {
+          if (result.done) return null;
+          buffer += decoder.decode(result.value, { stream: true });
+          var idx;
+          while ((idx = buffer.indexOf("\n")) >= 0) {
+            var line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
+            if (!line.trim()) continue;
+            try {
+              handleBuildEvent(JSON.parse(line));
+            } catch (e) {
+              /* skip malformed chunk */
+            }
+          }
+          return pump();
+        });
+      }
+      return pump();
     }).catch(function (err) {
-      errBox.textContent = err.message || "Something went wrong. Try again.";
-      errBox.hidden = false;
-    }).finally(function () {
-      btn.disabled = false;
-      btn.textContent = "Generate deck";
+      buildError(err.message || "Generation failed. Try again.");
     });
   });
 
@@ -229,6 +318,8 @@
     return Promise.all([api("/api/me"), api("/api/decks"), api("/api/canva/status")]).then(function (results) {
       state.me = results[0].user;
       state.me.usageLeft = results[0].usage.left;
+      state.me.unlimited = Boolean(results[0].unlimited);
+      state.me.maxPages = results[0].maxPages || 6;
       state.decks = results[1].decks;
       state.canva = results[2];
       renderAccount();

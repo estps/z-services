@@ -47,7 +47,14 @@ const CANVA_SCOPE = "design:content:write profile:read";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
+const ADMIN_IDS = new Set(
+  String(process.env.ADMIN_IDS || "da7f066b-073f-4e3e-aea6-bca04d1dfefb,cb01e8f4-55cb-4542-ad89-a3fadd77552d")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 6);
+const ADMIN_MAX_PAGES = Number(process.env.ADMIN_MAX_PAGES || 20);
 const MONTHLY_BUDGET_USD = Number(process.env.MONTHLY_BUDGET_USD || 5);
 /* deepseek-chat pricing, USD per 1M tokens (approx) */
 const COST_IN_PER_M = Number(process.env.COST_IN_PER_M || 0.27);
@@ -228,12 +235,33 @@ function buildPrompt(details, pages, invitees) {
   return [
     "You are a senior presentation designer. Create a concise, professional slide deck.",
     `Return STRICT JSON only, no markdown, no code fences, with this exact shape:`,
-    `{"title": "Deck title", "slides": [{"title": "Slide title", "bullets": ["point", "point", "point"]}]}`,
+    `{"title": "Deck title", "theme": {"bg": "1E1B16", "accent": "C9A227", "text": "FFFFFF", "muted": "CFC6AE"}, "slides": [{"title": "Slide title", "bullets": ["point", "point", "point"]}]}`,
     `Rules: exactly ${pages} slides; 3-5 short bullets per slide; no bullet longer than 16 words;`,
     `plain text only; make the content specific to the brief and easy to present live.`,
+    `Choose theme colors as 6-digit hex (no #) that fit the topic's mood and look like a premium designed template:`,
+    `dark, elegant backgrounds (history/luxury -> deep charcoal bg with gold accent and cream text; tech -> deep navy with cyan accent;`,
+    `nature -> deep forest green with warm cream; bold/business -> near-black with vivid accent).`,
+    `"text" must be near-white and clearly readable on "bg"; "muted" is for bullet text; "accent" pops on "bg".`,
     audience,
     `Brief: ${details}`,
   ].filter(Boolean).join("\n");
+}
+
+const HEX = /^[0-9a-fA-F]{6}$/;
+
+function normalizeTheme(raw) {
+  const fallback = { bg: "1E1B16", accent: "C9A227", text: "FFFFFF", muted: "CFC6AE" };
+  if (!raw || typeof raw !== "object") return fallback;
+  const pick = (value, def) => {
+    const cleaned = String(value || "").replace(/^#/, "").trim();
+    return HEX.test(cleaned) ? cleaned.toUpperCase() : def;
+  };
+  return {
+    bg: pick(raw.bg, fallback.bg),
+    accent: pick(raw.accent, fallback.accent),
+    text: pick(raw.text, fallback.text),
+    muted: pick(raw.muted, fallback.muted),
+  };
 }
 
 async function generateDeck(details, pages, invitees) {
@@ -290,6 +318,7 @@ async function generateDeck(details, pages, invitees) {
   if (!slides.length) throw new Error("AI returned an empty deck; please try again");
   return {
     title: String(parsed.title || details.slice(0, 80) || "Untitled presentation").slice(0, 140),
+    theme: normalizeTheme(parsed.theme),
     slides,
     usage,
   };
@@ -451,23 +480,67 @@ async function canvaAccessToken(uid) {
 
 async function buildPptx(deck) {
   const { default: PptxGenJS } = await import("pptxgenjs");
+  const theme = normalizeTheme(deck.theme);
   const pptx = new PptxGenJS();
   pptx.defineLayout({ name: "Z16x9", width: 13.333, height: 7.5 });
   pptx.layout = "Z16x9";
-  const title = pptx.addSlide();
-  title.background = { color: "6D5CFF" };
-  title.addText(deck.title, { x: 0.9, y: 2.6, w: 11.5, h: 1.7, fontSize: 42, bold: true, color: "FFFFFF" });
-  title.addText("Created with Z Slides", { x: 0.9, y: 4.5, w: 11.5, h: 0.6, fontSize: 15, color: "E8E6FF" });
-  for (const slide of deck.slides) {
+  const serif = "Georgia";
+  const sans = "Segoe UI";
+
+  /* Elegant ornamental frame: hairline border + corner diamonds. */
+  const frame = (slide) => {
+    const thin = 0.022;
+    slide.addShape("rect", { x: 0.28, y: 0.28, w: 12.773, h: thin, fill: { color: theme.accent } });
+    slide.addShape("rect", { x: 0.28, y: 7.2, w: 12.773, h: thin, fill: { color: theme.accent } });
+    slide.addShape("rect", { x: 0.28, y: 0.28, w: thin, h: 6.942, fill: { color: theme.accent } });
+    slide.addShape("rect", { x: 13.031, y: 0.28, w: thin, h: 6.942, fill: { color: theme.accent } });
+    [[0.28, 0.28], [13.053, 0.28], [0.28, 7.222], [13.053, 7.222]].forEach(([x, y]) => {
+      slide.addShape("diamond", { x: x - 0.11, y: y - 0.11, w: 0.22, h: 0.22, fill: { color: theme.accent } });
+    });
+  };
+
+  /* Cover slide */
+  const cover = pptx.addSlide();
+  cover.background = { color: theme.bg };
+  frame(cover);
+  cover.addText(
+    String(deck.title || "Presentation").toUpperCase(),
+    {
+      x: 1.05, y: 2.05, w: 11.23, h: 2.3, align: "left", valign: "middle",
+      fontFace: serif, color: theme.text, fontSize: deck.title.length > 42 ? 40 : 48, charSpacing: 1,
+    }
+  );
+  cover.addShape("rect", { x: 1.08, y: 4.5, w: 1.6, h: 0.045, fill: { color: theme.accent } });
+  cover.addText("P R E S E N T A T I O N", {
+    x: 1.08, y: 4.72, w: 8, h: 0.5, fontFace: serif, italic: true, color: theme.accent, fontSize: 18, charSpacing: 3,
+  });
+  cover.addText("Created with Z Slides", {
+    x: 1.08, y: 6.78, w: 8, h: 0.35, fontFace: sans, color: theme.muted, fontSize: 10,
+  });
+
+  /* Content slides */
+  deck.slides.forEach((slide, index) => {
     const s = pptx.addSlide();
-    s.background = { color: "0E1118" };
-    s.addShape("rect", { x: 0, y: 0, w: 0.22, h: 7.5, fill: { color: "6D5CFF" } });
-    s.addText(slide.title, { x: 0.9, y: 0.65, w: 11.7, h: 1.2, fontSize: 32, bold: true, color: "FFFFFF" });
-    s.addText(
-      (slide.bullets || []).map((b) => ({ text: b, options: { bullet: { code: "25CF" }, breakLine: true } })),
-      { x: 0.95, y: 2.0, w: 11.6, h: 4.9, fontSize: 19, color: "CBD3E1", lineSpacingMultiple: 1.35 }
-    );
-  }
+    s.background = { color: theme.bg };
+    frame(s);
+    s.addText(String(slide.title || ""), {
+      x: 0.95, y: 0.6, w: 11.5, h: 1.0, fontFace: serif, color: theme.text, fontSize: 30,
+    });
+    s.addShape("rect", { x: 0.98, y: 1.62, w: 1.1, h: 0.04, fill: { color: theme.accent } });
+    const bullets = (slide.bullets || []).map((b) => ({
+      text: b,
+      options: { bullet: { code: "25C6" }, color: theme.muted, breakLine: true },
+    }));
+    if (bullets.length) {
+      s.addText(bullets, {
+        x: 1.0, y: 2.0, w: 11.3, h: 4.5, fontFace: sans, fontSize: 18, lineSpacingMultiple: 1.35,
+      });
+    }
+    s.addText(String(index + 1).padStart(2, "0"), {
+      x: 12.15, y: 6.72, w: 0.85, h: 0.4, align: "right", fontFace: sans, color: theme.accent, fontSize: 11,
+    });
+  });
+
   return await pptx.write({ outputType: "nodebuffer" });
 }
 
@@ -645,6 +718,298 @@ async function handleCanvaCallback(req, res, url) {
 
 /* ---------------- app API ---------------- */
 
+/* ---------------- live generation (NDJSON stream) ---------------- */
+
+class GenerationError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function prepareGeneration(user, body) {
+  if (!DEEPSEEK_API_KEY) throw new GenerationError(500, "no_ai_key", "The AI key is not configured yet.");
+  const admin = ADMIN_IDS.has(user.id);
+  const maxPages = admin ? ADMIN_MAX_PAGES : MAX_PAGES;
+  const details = String(body.details || "").trim();
+  const pages = Math.max(1, Math.min(maxPages, Number(body.pages) || maxPages));
+  const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
+    .map((entry) => String(entry).trim())
+    .filter(Boolean)
+    .slice(0, 20);
+  if (details.length < 10) throw new GenerationError(400, "details_too_short", "Tell the AI a bit more about the presentation.");
+  if (details.length > 2000) throw new GenerationError(400, "details_too_long", "Keep the details under 2000 characters.");
+  const usage = await getUsage(user.id);
+  if (!ADMIN_IDS.has(user.id) && usage.total >= FREE_DECKS) {
+    throw new GenerationError(402, "quota", `You have used all ${FREE_DECKS} free presentations.`);
+  }
+  const budget = await getBudget();
+  if (budget.usd >= MONTHLY_BUDGET_USD) {
+    throw new GenerationError(503, "budget", "This month's AI budget is used up. Try again next month.");
+  }
+  return { details, pages, invitees };
+}
+
+/* Pull completed slide objects out of a partially streamed JSON document. */
+function extractSlides(raw) {
+  const key = raw.indexOf('"slides"');
+  if (key < 0) return [];
+  const open = raw.indexOf("[", key);
+  if (open < 0) return [];
+  const slides = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = open + 1; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        try {
+          slides.push(JSON.parse(raw.slice(start, i + 1)));
+        } catch {
+          /* malformed fragment - skip */
+        }
+        start = -1;
+      }
+    } else if (ch === "]" && depth === 0) {
+      break;
+    }
+  }
+  return slides;
+}
+
+function extractMeta(raw) {
+  const meta = {};
+  const titleMatch = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw);
+  if (titleMatch) {
+    try {
+      meta.title = JSON.parse(`"${titleMatch[1]}"`);
+    } catch {
+      meta.title = titleMatch[1];
+    }
+  }
+  const themeKey = raw.indexOf('"theme"');
+  if (themeKey >= 0) {
+    const open = raw.indexOf("{", themeKey);
+    if (open >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = open; i < raw.length; i += 1) {
+        const ch = raw[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') inString = true;
+        else if (ch === "{") depth += 1;
+        else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              meta.theme = normalizeTheme(JSON.parse(raw.slice(open, i + 1)));
+            } catch {
+              /* skip */
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+  return meta;
+}
+
+async function streamGeneration(prep, onProgress) {
+  const response = await fetch(DEEPSEEK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        { role: "system", content: "You output only valid JSON. Never wrap it in markdown." },
+        { role: "user", content: buildPrompt(prep.details, prep.pages, prep.invitees) },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: 4000,
+      temperature: 0.7,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`AI request failed (${response.status}) ${text.slice(0, 200)}`);
+  }
+  let buffer = "";
+  let raw = "";
+  let usage = null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let event = null;
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (event.usage) usage = event.usage;
+      const delta = (event.choices && event.choices[0] && event.choices[0].delta && event.choices[0].delta.content) || "";
+      if (delta) {
+        raw += delta;
+        onProgress(extractMeta(raw), extractSlides(raw));
+      }
+    }
+  }
+  return { raw, usage };
+}
+
+function parseGenerated(raw) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+  if (!parsed || !Array.isArray(parsed.slides) || !parsed.slides.length) {
+    throw new Error("AI returned an unexpected format; please try again");
+  }
+  const slides = parsed.slides
+    .slice(0, MAX_PAGES)
+    .map((slide) => ({
+      title: String(slide.title || "").slice(0, 120) || "Untitled slide",
+      bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6).map((b) => String(b).slice(0, 220)),
+    }))
+    .filter((slide) => slide.title || slide.bullets.length);
+  if (!slides.length) throw new Error("AI returned an empty deck; please try again");
+  return {
+    title: String(parsed.title || "Untitled presentation").slice(0, 140),
+    theme: normalizeTheme(parsed.theme),
+    slides,
+  };
+}
+
+async function handleGenerateStream(req, res, user) {
+  const raw = await readBody(req);
+  let body = null;
+  try {
+    body = JSON.parse(raw || "{}");
+  } catch {
+    body = null;
+  }
+  if (!body || typeof body !== "object") {
+    return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad_request" }));
+  }
+  let prep;
+  try {
+    prep = await prepareGeneration(user, body);
+  } catch (err) {
+    return send(req, res, err.status || 500, { "Content-Type": "application/json" }, JSON.stringify({ error: err.code || "error", message: err.message }));
+  }
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no",
+  });
+  const emit = (payload) => {
+    try {
+      res.write(JSON.stringify(payload) + "\n");
+    } catch {
+      /* client disconnected */
+    }
+  };
+  emit({ type: "status", text: "Asking the AI designer…" });
+  let sentSlides = 0;
+  let sentMeta = false;
+  try {
+    const { raw: rawText, usage } = await streamGeneration(prep, (meta, slides) => {
+      if (!sentMeta && (meta.title || meta.theme)) {
+        sentMeta = true;
+        emit({ type: "meta", title: meta.title || "", theme: meta.theme || null });
+      }
+      for (let i = sentSlides; i < slides.length; i += 1) {
+        emit({ type: "slide", index: i, slide: slides[i] });
+      }
+      if (slides.length > sentSlides) {
+        sentSlides = slides.length;
+        emit({ type: "status", text: `Writing slide ${sentSlides}…` });
+      }
+    });
+    const generated = parseGenerated(rawText);
+    emit({ type: "meta", title: generated.title, theme: generated.theme });
+    for (let i = sentSlides; i < generated.slides.length; i += 1) {
+      emit({ type: "slide", index: i, slide: generated.slides[i] });
+    }
+    await addBudget(usage || {});
+    await bumpUsage(user.id);
+    const id = crypto.randomBytes(8).toString("hex");
+    const deck = {
+      id,
+      owner: user.id,
+      ownerName: user.name,
+      title: generated.title,
+      theme: generated.theme,
+      details: prep.details,
+      invitees: prep.invitees,
+      slides: generated.slides,
+      createdAt: new Date().toISOString(),
+    };
+    const deckPath = path.join(STATE_DIR, "decks", `${id}.json`);
+    await writeJson(deckPath, deck);
+    emit({ type: "status", text: "Saved. Sending to Canva…" });
+    try {
+      const canva = await startCanvaDesign(deck, user.id);
+      if (canva) {
+        deck.canva = canva;
+        await writeJson(deckPath, deck);
+        emit({ type: "status", text: "Canva is building the presentation…" });
+      }
+    } catch (err) {
+      console.error("[zslides] canva start failed:", err);
+    }
+    emit({ type: "done", deck });
+  } catch (err) {
+    console.error("[zslides] stream generation failed:", err);
+    emit({ type: "error", message: String(err.message || err) });
+  }
+  res.end();
+}
+
 async function handleGenerate(req, res, user) {
   if (!DEEPSEEK_API_KEY) {
     return send(req, res, 500, { "Content-Type": "application/json" }, JSON.stringify({ error: "no_ai_key", message: "The AI key is not configured yet." }));
@@ -659,8 +1024,10 @@ async function handleGenerate(req, res, user) {
   if (!body || typeof body !== "object") {
     return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad_request" }));
   }
+  const admin = ADMIN_IDS.has(user.id);
+  const maxPages = admin ? ADMIN_MAX_PAGES : MAX_PAGES;
   const details = String(body.details || "").trim();
-  const pages = Math.max(1, Math.min(MAX_PAGES, Number(body.pages) || 6));
+  const pages = Math.max(1, Math.min(maxPages, Number(body.pages) || maxPages));
   const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
     .map((entry) => String(entry).trim())
     .filter(Boolean)
@@ -672,7 +1039,7 @@ async function handleGenerate(req, res, user) {
     return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "details_too_long" }));
   }
   const usage = await getUsage(user.id);
-  if (usage.total >= FREE_DECKS) {
+  if (!admin && usage.total >= FREE_DECKS) {
     return send(req, res, 402, { "Content-Type": "application/json" }, JSON.stringify({ error: "quota", message: `You have used all ${FREE_DECKS} free presentations.` }));
   }
   const budget = await getBudget();
@@ -696,6 +1063,7 @@ async function handleGenerate(req, res, user) {
     owner: user.id,
     ownerName: user.name,
     title: generated.title,
+    theme: generated.theme,
     details,
     invitees,
     slides: generated.slides,
@@ -887,10 +1255,13 @@ async function route(req, res) {
   if (pathname === "/api/me") {
     const usage = await getUsage(user.id);
     const budget = await getBudget();
+    const admin = ADMIN_IDS.has(user.id);
     return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
       JSON.stringify({
         user: { id: user.id, name: user.name, email: user.email, avatar: user.avatar },
-        usage: { used: usage.total, free: FREE_DECKS, left: Math.max(0, FREE_DECKS - usage.total) },
+        usage: { used: usage.total, free: FREE_DECKS, left: admin ? 9999 : Math.max(0, FREE_DECKS - usage.total) },
+        unlimited: admin,
+        maxPages: admin ? ADMIN_MAX_PAGES : MAX_PAGES,
         budgetCap: MONTHLY_BUDGET_USD,
       }));
   }
@@ -908,6 +1279,9 @@ async function route(req, res) {
   }
   if (pathname === "/api/generate" && method === "POST") {
     return handleGenerate(req, res, user);
+  }
+  if (pathname === "/api/generate-stream" && method === "POST") {
+    return handleGenerateStream(req, res, user);
   }
   const deckMatch = /^\/api\/decks\/([a-f0-9]{8,32})$/.exec(pathname);
   if (deckMatch) {

@@ -58,24 +58,36 @@
 
   <dialog id="createDialog" class="dialog">
     <form id="createForm" method="dialog">
-      <h2>New presentation</h2>
-      <label class="field">
-        <span>Who to invite <em>(emails, separated by commas)</em></span>
-        <input id="invitees" type="text" placeholder="sam@example.com, lee@example.com" autocomplete="off" />
-      </label>
-      <label class="field">
-        <span>Details <em>(what should the presentation be about?)</em></span>
-        <textarea id="details" rows="5" maxlength="2000" placeholder="A 6-slide pitch for our school esports club: goals, schedule, roles, budget…" required></textarea>
-      </label>
-      <label class="field">
-        <span>Number of pages <em>(max 6)</em></span>
-        <input id="pages" type="range" min="1" max="6" value="6" />
-        <output id="pagesOut">6 pages</output>
-      </label>
-      <p id="formError" class="form-error" hidden></p>
-      <div class="dialog-actions">
-        <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
-        <button type="submit" class="btn btn-primary" id="createBtn">Generate deck</button>
+      <div id="createFields">
+        <h2>New presentation</h2>
+        <label class="field">
+          <span>Who to invite <em>(emails, separated by commas)</em></span>
+          <input id="invitees" type="text" placeholder="sam@example.com, lee@example.com" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Details <em>(what should the presentation be about?)</em></span>
+          <textarea id="details" rows="5" maxlength="2000" placeholder="A 6-slide pitch for our school esports club: goals, schedule, roles, budget…" required></textarea>
+        </label>
+        <label class="field">
+          <span>Number of pages <em id="pagesHint">(max 6)</em></span>
+          <input id="pages" type="range" min="1" max="6" value="6" />
+          <output id="pagesOut">6 pages</output>
+        </label>
+        <p id="formError" class="form-error" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="createBtn">Generate deck</button>
+        </div>
+      </div>
+
+      <div id="buildView" hidden>
+        <h2>Building your deck…</h2>
+        <h3 id="buildTitle" class="build-title"></h3>
+        <p id="buildStatus" class="build-status">Starting…</p>
+        <div id="buildSlides" class="build-slides"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" id="buildClose" hidden>Close</button>
+        </div>
       </div>
     </form>
   </dialog>
