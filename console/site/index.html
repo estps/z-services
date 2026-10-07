@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Z Admin Console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #0b0d12; color: #e8eaf0; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #8b93a7; font-size: 13px; margin-bottom: 22px; }
+  .card { background: #12151d; border: 1px solid #232838; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #aab2c5; text-transform: uppercase; letter-spacing: .06em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+  .svc { display: flex; align-items: center; gap: 8px; background: #0e1118; border: 1px solid #1d2230; border-radius: 10px; padding: 9px 11px; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #e5484d; flex: none; }
+  .dot.ok { background: #46a758; }
+  .dot.warn { background: #f5a524; }
+  .name { flex: 1; font-weight: 600; }
+  .st { color: #8b93a7; font-size: 12px; }
+  pre { background: #0e1118; border: 1px solid #1d2230; border-radius: 10px; padding: 12px; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 380px; color: #c6cddd; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { background: #232838; color: #e8eaf0; border: 1px solid #2f3547; border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #2a3040; }
+  button.primary { background: #3b5bdb; border-color: #3b5bdb; }
+  input { width: 100%; background: #0e1118; border: 1px solid #232838; border-radius: 10px; padding: 10px 12px; color: #e8eaf0; font-size: 14px; margin-bottom: 10px; }
+  .muted { color: #8b93a7; font-size: 12px; }
+  .msg { color: #f5a524; font-size: 13px; min-height: 18px; margin: 6px 0; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; font-size: 12px; white-space: pre-wrap; color: #c6cddd; }
+  a { color: #7d9bff; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Z Admin Console</h1>
+  <div class="sub">black box ops · access.z-chat.men</div>
+
+  <div class="card" id="loginCard">
+    <h2>Sign in (admin only)</h2>
+    <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+    <div class="msg" id="loginMsg"></div>
+    <button class="primary" id="loginBtn">Sign in</button>
+  </div>
+
+  <div id="dash" class="hide">
+    <div class="card">
+      <h2>Services <span class="muted" id="healthTime"></span></h2>
+      <div class="grid" id="services"></div>
+    </div>
+    <div class="card">
+      <h2>Quick actions</h2>
+      <div class="row">
+        <button data-restart="zchat">Restart Z Chat</button>
+        <button data-restart="zslides">Restart Z Slides</button>
+        <button data-restart="zbox">Restart zbox MCP</button>
+        <button data-restart="zmedia">Restart Z Media</button>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+      <div class="msg" id="actionMsg"></div>
+    </div>
+    <div class="card">
+      <h2>System</h2>
+      <div class="stats" id="sysStats"></div>
+    </div>
+    <div class="card">
+      <h2>z-chat deploy log (last 40)</h2>
+      <pre id="deployLog">loading…</pre>
+    </div>
+    <div class="card">
+      <h2>Handy links</h2>
+      <div class="muted">
+        <a href="https://z-chat.men/admin" target="_blank">Z Chat admin</a> ·
+        <a href="https://z-chat.men/admin/applications" target="_blank">Applications</a> ·
+        <a href="https://z-chat.men/admin/reports" target="_blank">Reports</a> ·
+        <a href="https://z-chat.men/admin/users" target="_blank">Users</a> ·
+        <a href="https://present.z-chat.men" target="_blank">Z Slides</a>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="logoutBtn">Sign out</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const H = { "x-zc": "console" };
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { ...H, "Content-Type": "application/json", ...(opts.headers || {}) } });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
+  function dotClass(state) {
+    if (state === "active") return "dot ok";
+    if (state === "activating" || state === "reloading" || state === "deactivating") return "dot warn";
+    return "dot";
+  }
+
+  async function loadHealth() {
+    const { body } = await api("/api/health");
+    $("services").innerHTML = "";
+    for (const s of body.services || []) {
+      const el = document.createElement("div");
+      el.className = "svc";
+      el.innerHTML = `<span class="${dotClass(s.active)}"></span><span class="name"></span><span class="st"></span>`;
+      el.querySelector(".name").textContent = s.unit;
+      el.querySelector(".st").textContent = s.active;
+      $("services").appendChild(el);
+    }
+    $("healthTime").textContent = body.time ? "· " + new Date(body.time).toLocaleTimeString() : "";
+    $("sysStats").textContent =
+      `memory\n${body.mem || ""}\n\n${body.uptime || ""}\n\ndisk\n${body.disk || ""}\n\nblackscan frozen lines: ${body.frozenCount || "n/a"}`;
+  }
+
+  async function loadDeploy() {
+    const { body } = await api("/api/deploy");
+    $("deployLog").textContent = (body.lines || []).join("\n") || "(empty)";
+  }
+
+  async function showDash() {
+    $("loginCard").classList.add("hide");
+    $("dash").classList.remove("hide");
+    await Promise.all([loadHealth(), loadDeploy()]);
+  }
+
+  $("loginBtn").onclick = async () => {
+    $("loginMsg").textContent = "";
+    const { status, body } = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+    });
+    if (status !== 200) return ($("loginMsg").textContent = body.error || "Login failed");
+    await showDash();
+  };
+  $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+  $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); };
+  $("logoutBtn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
+  document.querySelectorAll("[data-restart]").forEach((btn) => {
+    btn.onclick = async () => {
+      const target = btn.getAttribute("data-restart");
+      $("actionMsg").textContent = `restarting ${target}…`;
+      const { status, body } = await api("/api/restart", { method: "POST", body: JSON.stringify({ target }) });
+      $("actionMsg").textContent = status === 200 ? `${target} restarted` : `failed: ${body.err || body.error || "error"}`;
+      setTimeout(loadHealth, 3000);
+    };
+  });
+
+  (async () => {
+    const { body } = await api("/api/me");
+    if (body.admin) await showDash();
+  })();
+</script>
+</body>
+</html>
