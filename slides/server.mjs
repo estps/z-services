@@ -236,7 +236,8 @@ function buildPrompt(details, pages, invitees) {
     "You are a senior presentation designer. Create a concise, professional slide deck.",
     `Return STRICT JSON only, no markdown, no code fences, with this exact shape:`,
     `{"title": "Deck title", "theme": {"bg": "1E1B16", "accent": "C9A227", "text": "FFFFFF", "muted": "CFC6AE"}, "slides": [{"title": "Slide title", "bullets": ["point", "point", "point"]}]}`,
-    `Rules: exactly ${pages} slides; 3-5 short bullets per slide; no bullet longer than 16 words;`,
+    `Rules: the slides array MUST contain EXACTLY ${pages} slide objects - count them before you finish and add more if short;`,
+    `3-5 short bullets per slide; no bullet longer than 16 words;`,
     `plain text only; make the content specific to the brief and easy to present live.`,
     `Choose theme colors as 6-digit hex (no #) that fit the topic's mood and look like a premium designed template:`,
     `dark, elegant backgrounds (history/luxury -> deep charcoal bg with gold accent and cream text; tech -> deep navy with cyan accent;`,
@@ -307,7 +308,7 @@ async function generateDeck(details, pages, invitees) {
     throw new Error("AI returned an unexpected format; please try again");
   }
   const slides = parsed.slides
-    .slice(0, MAX_PAGES)
+    .slice(0, pages)
     .map((slide) => ({
       title: String(slide.title || "").slice(0, 120) || "Untitled slide",
       bullets: (Array.isArray(slide.bullets) ? slide.bullets : [])
@@ -316,11 +317,24 @@ async function generateDeck(details, pages, invitees) {
     }))
     .filter((slide) => slide.title || slide.bullets.length);
   if (!slides.length) throw new Error("AI returned an empty deck; please try again");
+  let finalSlides = slides;
+  let usageTotal = usage;
+  if (finalSlides.length < pages) {
+    try {
+      const extra = await completeMissingSlides({ details, pages, invitees }, pages, finalSlides, null);
+      if (extra.list.length) {
+        finalSlides = finalSlides.concat(extra.list);
+        usageTotal = mergeUsage(usageTotal, extra.usage);
+      }
+    } catch (err) {
+      console.error("[zslides] slide expansion (sync) failed:", err);
+    }
+  }
   return {
     title: String(parsed.title || details.slice(0, 80) || "Untitled presentation").slice(0, 140),
     theme: normalizeTheme(parsed.theme),
-    slides,
-    usage,
+    slides: finalSlides,
+    usage: usageTotal,
   };
 }
 
@@ -892,7 +906,7 @@ async function streamGeneration(prep, onProgress) {
   return { raw, usage };
 }
 
-function parseGenerated(raw) {
+function parseGenerated(raw, maxPages = MAX_PAGES) {
   let parsed = null;
   try {
     parsed = JSON.parse(raw);
@@ -910,7 +924,7 @@ function parseGenerated(raw) {
     throw new Error("AI returned an unexpected format; please try again");
   }
   const slides = parsed.slides
-    .slice(0, MAX_PAGES)
+    .slice(0, maxPages)
     .map((slide) => ({
       title: String(slide.title || "").slice(0, 120) || "Untitled slide",
       bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6).map((b) => String(b).slice(0, 220)),
@@ -922,6 +936,74 @@ function parseGenerated(raw) {
     theme: normalizeTheme(parsed.theme),
     slides,
   };
+}
+
+function mergeUsage(a, b) {
+  const prompt = Number((a && a.prompt_tokens) || 0) + Number((b && b.prompt_tokens) || 0);
+  const completion = Number((a && a.completion_tokens) || 0) + Number((b && b.completion_tokens) || 0);
+  return { prompt_tokens: prompt, completion_tokens: completion };
+}
+
+/* When the model comes up short of the requested page count, ask once more
+   for exactly the missing number of additional, distinct slides. */
+async function completeMissingSlides(prep, targetPages, existing, onSlide) {
+  const missing = targetPages - existing.length;
+  if (missing <= 0) return { list: [], usage: null };
+  const titles = existing.map((slide) => slide.title).filter(Boolean).join(" | ");
+  const response = await fetch(DEEPSEEK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      messages: [
+        { role: "system", content: "You output only valid JSON. Never wrap it in markdown." },
+        {
+          role: "user",
+          content:
+            `${buildPrompt(prep.details, targetPages, prep.invitees)}\n\n` +
+            `You already wrote these slides (titles): ${titles}.\n` +
+            `Output ONLY {"slides": [ ... ]} containing EXACTLY ${missing} additional, distinct slides that continue the deck. ` +
+            `Do not repeat the existing slides. Same shape as before: {"title": "...", "bullets": ["..."]}.`,
+        },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: 3000,
+      temperature: 0.7,
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`AI follow-up failed (${response.status}) ${text.slice(0, 160)}`);
+  }
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  let parsed = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+  const list = (parsed && Array.isArray(parsed.slides) ? parsed.slides : [])
+    .map((slide) => ({
+      title: String(slide.title || "").slice(0, 120) || "Untitled slide",
+      bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6).map((b) => String(b).slice(0, 220)),
+    }))
+    .filter((slide) => slide.title || slide.bullets.length)
+    .slice(0, missing);
+  for (let i = 0; i < list.length; i += 1) {
+    if (onSlide) onSlide(list[i], existing.length + i);
+  }
+  return { list, usage: data.usage || null };
 }
 
 async function handleGenerateStream(req, res, user) {
@@ -970,12 +1052,27 @@ async function handleGenerateStream(req, res, user) {
         emit({ type: "status", text: `Writing slide ${sentSlides}…` });
       }
     });
-    const generated = parseGenerated(rawText);
+    const generated = parseGenerated(rawText, prep.pages);
     emit({ type: "meta", title: generated.title, theme: generated.theme });
     for (let i = sentSlides; i < generated.slides.length; i += 1) {
       emit({ type: "slide", index: i, slide: generated.slides[i] });
     }
-    await addBudget(usage || {});
+    let totalUsage = usage;
+    if (generated.slides.length < prep.pages) {
+      emit({ type: "status", text: `Adding ${prep.pages - generated.slides.length} more slide(s)…` });
+      try {
+        const extra = await completeMissingSlides(prep, prep.pages, generated.slides, (slide, idx) => {
+          emit({ type: "slide", index: idx, slide });
+        });
+        if (extra.list.length) {
+          generated.slides.push(...extra.list);
+          totalUsage = mergeUsage(totalUsage, extra.usage);
+        }
+      } catch (err) {
+        console.error("[zslides] slide expansion failed:", err);
+      }
+    }
+    await addBudget(totalUsage || {});
     await bumpUsage(user.id);
     const id = crypto.randomBytes(8).toString("hex");
     const deck = {
