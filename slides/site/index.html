@@ -26,6 +26,7 @@
       <nav class="decklist" id="decklist"></nav>
 
       <div class="sidebar-foot">
+        <div id="canvaStatus" class="canva-status"></div>
         <div class="account" id="account"></div>
         <a class="logout" href="/auth/logout">Sign out</a>
       </div>
@@ -43,8 +44,12 @@
           <div>
             <h2 id="deckTitle">—</h2>
             <p class="viewer-meta" id="deckMeta"></p>
+            <p class="viewer-canva-note" id="canvaNote" hidden></p>
           </div>
-          <button class="btn btn-ghost" id="copyBtn">Copy as text</button>
+          <div class="viewer-actions">
+            <a id="openCanvaBtn" class="btn btn-canva" hidden target="_blank" rel="noopener">Open in Canva</a>
+            <button class="btn btn-ghost" id="copyBtn">Copy as text</button>
+          </div>
         </header>
         <div class="slides" id="slides"></div>
       </section>

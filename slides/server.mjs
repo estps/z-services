@@ -29,8 +29,20 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "https://dwstivxwyqdogzgxnidm.s
 const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "";
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-flash";
 const DEEPSEEK_URL = process.env.DEEPSEEK_URL || "https://api.deepseek.com/chat/completions";
+
+/* Canva Connect (each user connects their own Canva account; the deck is
+   exported as PPTX and Canva's URL-import turns it into a real, editable
+   Canva presentation). Requires a Canva integration's client credentials. */
+const CANVA_CLIENT_ID = process.env.CANVA_CLIENT_ID || "";
+const CANVA_CLIENT_SECRET = process.env.CANVA_CLIENT_SECRET || "";
+const CANVA_REDIRECT = process.env.CANVA_REDIRECT || `${SELF_ORIGIN}/auth/canva/callback`;
+const CANVA_AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize";
+const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
+const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
+const CANVA_SCOPE = "design:content:write";
+const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
 const MAX_PAGES = Number(process.env.MAX_PAGES || 6);
@@ -199,6 +211,7 @@ async function listDecks(uid) {
         pages: Array.isArray(deck.slides) ? deck.slides.length : 0,
         invitees: deck.invitees || [],
         createdAt: deck.createdAt,
+        canva: deck.canva ? { status: deck.canva.status, editUrl: deck.canva.editUrl || null } : null,
       });
     }
   }
@@ -400,6 +413,173 @@ function handleCallback(req, res, url) {
   }, "");
 }
 
+/* ---------------- Canva Connect ---------------- */
+
+const canvaDir = () => path.join(STATE_DIR, "canva");
+const canvaFile = (uid) => path.join(canvaDir(), `${uid}.json`);
+
+async function getCanvaTokens(uid) {
+  return readJson(canvaFile(uid), null);
+}
+
+async function canvaAccessToken(uid) {
+  const tokens = await getCanvaTokens(uid);
+  if (!tokens || !tokens.refresh_token) return null;
+  if (tokens.access_token && tokens.expires_at && Date.now() < tokens.expires_at - 60000) {
+    return tokens.access_token;
+  }
+  if (!CANVA_CLIENT_ID || !CANVA_CLIENT_SECRET) return null;
+  const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token });
+  const response = await fetch(CANVA_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic " + Buffer.from(`${CANVA_CLIENT_ID}:${CANVA_CLIENT_SECRET}`).toString("base64"),
+    },
+    body,
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  tokens.access_token = data.access_token;
+  if (data.refresh_token) tokens.refresh_token = data.refresh_token;
+  tokens.expires_at = Date.now() + Number(data.expires_in || 14400) * 1000;
+  await writeJson(canvaFile(uid), tokens);
+  return tokens.access_token;
+}
+
+async function buildPptx(deck) {
+  const { default: PptxGenJS } = await import("pptxgenjs");
+  const pptx = new PptxGenJS();
+  pptx.defineLayout({ name: "Z16x9", width: 13.333, height: 7.5 });
+  pptx.layout = "Z16x9";
+  const title = pptx.addSlide();
+  title.background = { color: "6D5CFF" };
+  title.addText(deck.title, { x: 0.9, y: 2.6, w: 11.5, h: 1.7, fontSize: 42, bold: true, color: "FFFFFF" });
+  title.addText("Created with Z Slides", { x: 0.9, y: 4.5, w: 11.5, h: 0.6, fontSize: 15, color: "E8E6FF" });
+  for (const slide of deck.slides) {
+    const s = pptx.addSlide();
+    s.background = { color: "0E1118" };
+    s.addShape("rect", { x: 0, y: 0, w: 0.22, h: 7.5, fill: { color: "6D5CFF" } });
+    s.addText(slide.title, { x: 0.9, y: 0.65, w: 11.7, h: 1.2, fontSize: 32, bold: true, color: "FFFFFF" });
+    s.addText(
+      (slide.bullets || []).map((b) => ({ text: b, options: { bullet: { code: "25CF" }, breakLine: true } })),
+      { x: 0.95, y: 2.0, w: 11.6, h: 4.9, fontSize: 19, color: "CBD3E1", lineSpacingMultiple: 1.35 }
+    );
+  }
+  return await pptx.write({ outputType: "nodebuffer" });
+}
+
+function exportUrl(deckId) {
+  const exp = Date.now() + EXPORT_TTL_MS;
+  const mac = crypto.createHmac("sha256", `${SESSION_SECRET}:export`).update(`${deckId}.${exp}`).digest("hex").slice(0, 32);
+  return `${SELF_ORIGIN}/pub/${deckId}.${exp}.${mac}.pptx`;
+}
+
+function validExport(id, exp, mac) {
+  const want = crypto.createHmac("sha256", `${SESSION_SECRET}:export`).update(`${id}.${exp}`).digest("hex").slice(0, 32);
+  return Date.now() <= Number(exp) && mac === want;
+}
+
+async function getExportBuffer(deck, id) {
+  const file = path.join(STATE_DIR, "exports", `${id}.pptx`);
+  try {
+    return await fs.readFile(file);
+  } catch {
+    const buffer = await buildPptx(deck);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, buffer);
+    return buffer;
+  }
+}
+
+async function startCanvaImport(deck, uid) {
+  const token = await canvaAccessToken(uid);
+  if (!token) return null;
+  await getExportBuffer(deck, deck.id);
+  const response = await fetch(CANVA_IMPORTS_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ url: exportUrl(deck.id), title: deck.title }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error("[zslides] canva import start failed:", response.status, JSON.stringify(data).slice(0, 300));
+    return null;
+  }
+  return { jobId: data.job?.id || null, status: data.job?.status || "in_progress" };
+}
+
+/* ---------------- Canva OAuth routes ---------------- */
+
+function handleCanvaLogin(req, res) {
+  if (!CANVA_CLIENT_ID || !CANVA_CLIENT_SECRET) {
+    return authFail(req, res, 400, "Canva is not configured yet on this server.");
+  }
+  const state = crypto.randomBytes(16).toString("hex");
+  const verifier = b64url(crypto.randomBytes(32));
+  const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
+  const location =
+    `${CANVA_AUTHORIZE_URL}` +
+    `?code_challenge_method=s256` +
+    `&response_type=code` +
+    `&client_id=${encodeURIComponent(CANVA_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(CANVA_REDIRECT)}` +
+    `&scope=${encodeURIComponent(CANVA_SCOPE)}` +
+    `&state=${state}` +
+    `&code_challenge=${challenge}`;
+  send(req, res, 302, {
+    Location: location,
+    "Set-Cookie": [
+      `cs_state=${state}; ${COOKIE_OPTS}; Max-Age=600`,
+      `cs_verifier=${verifier}; ${COOKIE_OPTS}; Max-Age=600`,
+    ],
+    "Cache-Control": "no-store",
+  }, "");
+}
+
+async function handleCanvaCallback(req, res, url) {
+  const user = currentUser(req);
+  if (!user) return send(req, res, 302, { Location: "/auth/login", "Cache-Control": "no-store" }, "");
+  const clearCookies = [`cs_state=; ${COOKIE_OPTS}; Max-Age=0`, `cs_verifier=; ${COOKIE_OPTS}; Max-Age=0`];
+  if (url.searchParams.get("error")) {
+    return send(req, res, 302, { Location: "/?canva=denied", "Set-Cookie": clearCookies, "Cache-Control": "no-store" }, "");
+  }
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const cookies = parseCookies(req);
+  if (!code || !state || !cookies.cs_state || state !== cookies.cs_state || !cookies.cs_verifier) {
+    return send(req, res, 302, { Location: "/?canva=error", "Set-Cookie": clearCookies, "Cache-Control": "no-store" }, "");
+  }
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      code_verifier: cookies.cs_verifier,
+      redirect_uri: CANVA_REDIRECT,
+    });
+    const response = await fetch(CANVA_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic " + Buffer.from(`${CANVA_CLIENT_ID}:${CANVA_CLIENT_SECRET}`).toString("base64"),
+      },
+      body,
+    });
+    if (!response.ok) throw new Error(`token exchange ${response.status}`);
+    const data = await response.json();
+    if (!data.refresh_token) throw new Error("no refresh token in response");
+    await writeJson(canvaFile(user.id), {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + Number(data.expires_in || 14400) * 1000,
+    });
+    send(req, res, 302, { Location: "/?canva=connected", "Set-Cookie": clearCookies, "Cache-Control": "no-store" }, "");
+  } catch (err) {
+    console.error("[zslides] canva token exchange failed:", err);
+    send(req, res, 302, { Location: "/?canva=error", "Set-Cookie": clearCookies, "Cache-Control": "no-store" }, "");
+  }
+}
+
 /* ---------------- app API ---------------- */
 
 async function handleGenerate(req, res, user) {
@@ -458,8 +638,73 @@ async function handleGenerate(req, res, user) {
     slides: generated.slides,
     createdAt: new Date().toISOString(),
   };
-  await writeJson(path.join(STATE_DIR, "decks", `${id}.json`), deck);
+  const deckPath = path.join(STATE_DIR, "decks", `${id}.json`);
+  await writeJson(deckPath, deck);
+  /* If the user connected Canva, push the deck straight into their account. */
+  try {
+    const canva = await startCanvaImport(deck, user.id);
+    if (canva) {
+      deck.canva = canva;
+      await writeJson(deckPath, deck);
+    }
+  } catch (err) {
+    console.error("[zslides] canva import failed:", err);
+  }
   send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, JSON.stringify({ deck }));
+}
+
+async function handleCanvaStatusApi(req, res, user) {
+  const tokens = await getCanvaTokens(user.id);
+  send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    JSON.stringify({
+      configured: Boolean(CANVA_CLIENT_ID && CANVA_CLIENT_SECRET),
+      connected: Boolean(tokens && tokens.refresh_token),
+    }));
+}
+
+async function handleDeckCanva(req, res, user, id) {
+  const deckPath = path.join(STATE_DIR, "decks", `${id}.json`);
+  const deck = await readJson(deckPath, null);
+  if (!deck || deck.owner !== user.id) {
+    return send(req, res, 404, { "Content-Type": "application/json" }, JSON.stringify({ error: "not_found" }));
+  }
+  const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+  if (!deck.canva || !deck.canva.jobId) {
+    return send(req, res, 200, headers, JSON.stringify({ status: "not_started" }));
+  }
+  if (deck.canva.status === "in_progress") {
+    try {
+      const token = await canvaAccessToken(user.id);
+      if (token) {
+        const response = await fetch(`${CANVA_IMPORTS_URL}/${deck.canva.jobId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        const job = data.job || {};
+        if (job.status === "success") {
+          const design = (job.result && job.result.designs && job.result.designs[0]) || null;
+          deck.canva = {
+            jobId: deck.canva.jobId,
+            status: "success",
+            editUrl: (design && design.urls && design.urls.edit_url) || null,
+            viewUrl: (design && design.urls && design.urls.view_url) || null,
+          };
+          await writeJson(deckPath, deck);
+        } else if (job.status === "failed") {
+          deck.canva = { jobId: deck.canva.jobId, status: "failed", error: (job.error && job.error.code) || "import_failed" };
+          await writeJson(deckPath, deck);
+        }
+      }
+    } catch (err) {
+      console.error("[zslides] canva poll failed:", err);
+    }
+  }
+  send(req, res, 200, headers, JSON.stringify({
+    status: deck.canva.status,
+    editUrl: deck.canva.editUrl || null,
+    viewUrl: deck.canva.viewUrl || null,
+    error: deck.canva.error || null,
+  }));
 }
 
 async function handleDeck(req, res, user, id) {
@@ -518,6 +763,22 @@ async function route(req, res) {
   if (pathname === "/auth/login") return handleLogin(req, res, url);
   if (pathname === "/auth/callback") return handleCallback(req, res, url);
   if (pathname === "/api/oauth/approve") return handleApprove(req, res);
+  if (pathname === "/auth/canva") return handleCanvaLogin(req, res);
+  if (pathname === "/auth/canva/callback") return handleCanvaCallback(req, res, url);
+
+  /* Signed public export URLs (used by Canva's URL import fetcher). */
+  const pubMatch = /^\/pub\/([a-f0-9]{8,32})\.(\d{10,17})\.([a-f0-9]{32})\.pptx$/.exec(pathname);
+  if (pubMatch && (method === "GET" || method === "HEAD")) {
+    const [, id, exp, mac] = pubMatch;
+    if (!validExport(id, exp, mac)) return send(req, res, 403, {}, "Forbidden");
+    const deck = await readJson(path.join(STATE_DIR, "decks", `${id}.json`), null);
+    if (!deck) return send(req, res, 404, {}, "Not found");
+    const buffer = await getExportBuffer(deck, id);
+    return send(req, res, 200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "Cache-Control": "private, max-age=600",
+    }, buffer);
+  }
 
   const user = currentUser(req);
   if (!user) {
@@ -543,6 +804,13 @@ async function route(req, res) {
   if (pathname === "/api/decks" && (method === "GET" || method === "HEAD")) {
     const decks = await listDecks(user.id);
     return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, JSON.stringify({ decks }));
+  }
+  if (pathname === "/api/canva/status") {
+    return handleCanvaStatusApi(req, res, user);
+  }
+  const canvaMatch = /^\/api\/decks\/([a-f0-9]{8,32})\/canva$/.exec(pathname);
+  if (canvaMatch) {
+    return handleDeckCanva(req, res, user, canvaMatch[1]);
   }
   if (pathname === "/api/generate" && method === "POST") {
     return handleGenerate(req, res, user);

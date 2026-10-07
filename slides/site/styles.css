@@ -84,7 +84,7 @@ body {
 .deck-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
 .deck-sub { color: var(--muted); font-size: .78rem; }
 
-.sidebar-foot { border-top: 1px solid var(--line); padding-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sidebar-foot { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .account { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .avatar {
   width: 36px; height: 36px; border-radius: 50%;
@@ -92,10 +92,27 @@ body {
   background: linear-gradient(135deg, #2b8a6e, #1f6f5c);
 }
 .account-info { display: flex; flex-direction: column; min-width: 0; }
-.account-name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.account-mail { color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.logout { color: var(--muted); font-size: .8rem; text-decoration: none; }
+.account-name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.account-mail { color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.logout { color: var(--muted); font-size: .8rem; text-decoration: none; align-self: flex-end; }
 .logout:hover { color: var(--text); }
+
+.canva-status { display: flex; flex-direction: column; gap: 6px; }
+.canva-chip { color: var(--good); font-size: .82rem; font-weight: 600; }
+.canva-chip::before { content: "● "; }
+.canva-connect {
+  display: inline-block; text-align: center;
+  background: linear-gradient(135deg, #00c4cc, #6420ff);
+  color: #fff; border-radius: 10px; padding: 9px 12px;
+  font-weight: 600; text-decoration: none; font-size: .88rem;
+}
+.canva-connect:hover { filter: brightness(1.08); }
+.canva-hint { color: var(--muted); font-size: .74rem; }
+
+.btn-canva { background: linear-gradient(135deg, #00c4cc, #6420ff); color: #fff; text-decoration: none; display: inline-block; }
+.btn-canva:hover { filter: brightness(1.08); }
+.viewer-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
+.viewer-canva-note { margin: 8px 0 0; color: var(--muted); font-size: .85rem; }
 
 /* main */
 .main { flex: 1; padding: 34px 38px; overflow-y: auto; }

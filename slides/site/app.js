@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  var state = { me: null, decks: [], current: null };
+  var state = { me: null, decks: [], current: null, canva: null, canvaPoll: 0 };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -68,6 +68,54 @@
     return card;
   }
 
+  function renderCanvaStatus() {
+    var box = $("canvaStatus");
+    box.innerHTML = "";
+    if (!state.canva || !state.canva.configured) return;
+    if (state.canva.connected) {
+      box.appendChild(el("span", "canva-chip", "Canva connected"));
+    } else {
+      var link = el("a", "canva-connect", "Connect Canva");
+      link.href = "/auth/canva";
+      box.appendChild(link);
+      box.appendChild(el("span", "canva-hint", "to get decks in your Canva"));
+    }
+  }
+
+  function renderCanvaBar(deck) {
+    var btn = $("openCanvaBtn");
+    var note = $("canvaNote");
+    btn.hidden = true;
+    note.hidden = true;
+    if (!deck.canva) return;
+    if (deck.canva.status === "success" && deck.canva.editUrl) {
+      btn.href = deck.canva.editUrl;
+      btn.hidden = false;
+      note.textContent = "This deck is in your Canva account — edit it there, it's fully editable.";
+      note.hidden = false;
+    } else if (deck.canva.status === "in_progress") {
+      note.textContent = "Sending to Canva…";
+      note.hidden = false;
+      pollCanva(deck.id);
+    } else if (deck.canva.status === "failed") {
+      note.textContent = "Canva import failed (" + (deck.canva.error || "unknown") + "). The deck is still safe here.";
+      note.hidden = false;
+    }
+  }
+
+  function pollCanva(deckId) {
+    var tries = state.canvaPoll = (state.canvaPoll || 0) + 1;
+    if (tries > 20) return;
+    window.setTimeout(function () {
+      api("/api/decks/" + deckId + "/canva").then(function (data) {
+        if (!state.current || state.current.id !== deckId) return;
+        state.current.canva = data;
+        renderCanvaBar(state.current);
+        if (data.status === "in_progress") pollCanva(deckId);
+      }).catch(function () {});
+    }, 3000);
+  }
+
   function openDeck(id) {
     api("/api/decks/" + id).then(function (data) {
       state.current = data.deck;
@@ -79,6 +127,7 @@
       var slides = $("slides");
       slides.innerHTML = "";
       data.deck.slides.forEach(function (slide, i) { slides.appendChild(slideCard(slide, i)); });
+      renderCanvaBar(data.deck);
       renderDeckList();
     }).catch(function () { /* deck may have been removed */ });
   }
@@ -148,13 +197,15 @@
   });
 
   function refresh() {
-    return Promise.all([api("/api/me"), api("/api/decks")]).then(function (results) {
+    return Promise.all([api("/api/me"), api("/api/decks"), api("/api/canva/status")]).then(function (results) {
       state.me = results[0].user;
       state.me.usageLeft = results[0].usage.left;
       state.decks = results[1].decks;
+      state.canva = results[2];
       renderAccount();
       renderQuota(results[0].usage);
       renderDeckList();
+      renderCanvaStatus();
     });
   }
 
