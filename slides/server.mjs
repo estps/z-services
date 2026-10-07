@@ -725,6 +725,34 @@ async function handleCanvaStatusApi(req, res, user) {
     }));
 }
 
+/* POST /api/decks/:id/canva - push an existing deck into Canva on demand
+   (decks created before the user connected Canva can be sent later). */
+async function handleDeckCanvaSend(req, res, user, id) {
+  const deckPath = path.join(STATE_DIR, "decks", `${id}.json`);
+  const deck = await readJson(deckPath, null);
+  const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+  if (!deck || deck.owner !== user.id) {
+    return send(req, res, 404, headers, JSON.stringify({ error: "not_found" }));
+  }
+  if (!deck.canva || !deck.canva.jobId) {
+    try {
+      const canva = await startCanvaDesign(deck, user.id);
+      if (!canva) {
+        return send(req, res, 409, headers, JSON.stringify({
+          error: "canva_unavailable",
+          message: "Connect Canva first (bottom of the sidebar), then try again.",
+        }));
+      }
+      deck.canva = canva;
+      await writeJson(deckPath, deck);
+    } catch (err) {
+      console.error("[zslides] canva send failed:", err);
+      return send(req, res, 502, headers, JSON.stringify({ error: "canva_failed", message: String(err.message || err) }));
+    }
+  }
+  return handleDeckCanva(req, res, user, id);
+}
+
 async function handleDeckCanva(req, res, user, id) {
   const deckPath = path.join(STATE_DIR, "decks", `${id}.json`);
   const deck = await readJson(deckPath, null);
@@ -875,6 +903,7 @@ async function route(req, res) {
   }
   const canvaMatch = /^\/api\/decks\/([a-f0-9]{8,32})\/canva$/.exec(pathname);
   if (canvaMatch) {
+    if (method === "POST") return handleDeckCanvaSend(req, res, user, canvaMatch[1]);
     return handleDeckCanva(req, res, user, canvaMatch[1]);
   }
   if (pathname === "/api/generate" && method === "POST") {

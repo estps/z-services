@@ -87,7 +87,24 @@
     var note = $("canvaNote");
     btn.hidden = true;
     note.hidden = true;
-    if (!deck.canva) return;
+    note.innerHTML = "";
+    if (!deck.canva) {
+      if (state.canva && state.canva.configured && state.canva.connected) {
+        var send = el("a", "btn btn-canva", "Send to Canva");
+        send.href = "#";
+        send.addEventListener("click", function (event) {
+          event.preventDefault();
+          sendDeckToCanva(deck.id, send);
+        });
+        note.appendChild(send);
+        note.appendChild(el("span", "canva-hint", "  creates this deck in your Canva account"));
+        note.hidden = false;
+      } else if (state.canva && state.canva.configured) {
+        note.textContent = "Connect Canva (bottom of the sidebar) to open this deck in your Canva account.";
+        note.hidden = false;
+      }
+      return;
+    }
     if (deck.canva.status === "success" && deck.canva.editUrl) {
       btn.href = deck.canva.editUrl;
       btn.hidden = false;
@@ -101,6 +118,18 @@
       note.textContent = "Canva import failed (" + (deck.canva.error || "unknown") + "). The deck is still safe here.";
       note.hidden = false;
     }
+  }
+
+  function sendDeckToCanva(deckId, btn) {
+    btn.textContent = "Sending…";
+    api("/api/decks/" + deckId + "/canva", { method: "POST" }).then(function (data) {
+      if (!state.current || state.current.id !== deckId) return;
+      state.current.canva = data;
+      renderCanvaBar(state.current);
+    }).catch(function (err) {
+      btn.textContent = "Send to Canva";
+      window.alert((err.data && err.data.message) || "Could not send to Canva. Try again.");
+    });
   }
 
   function pollCanva(deckId) {
