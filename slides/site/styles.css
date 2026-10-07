@@ -102,14 +102,14 @@ body {
 .canva-chip::before { content: "● "; }
 .canva-connect {
   display: inline-block; text-align: center;
-  background: linear-gradient(135deg, #00c4cc, #6420ff);
-  color: #fff; border-radius: 10px; padding: 9px 12px;
+  background: linear-gradient(135deg, oklch(0.78 0.17 55), oklch(0.66 0.19 48));
+  color: var(--text); border-radius: 10px; padding: 9px 12px;
   font-weight: 600; text-decoration: none; font-size: .88rem;
 }
 .canva-connect:hover { filter: brightness(1.08); }
 .canva-hint { color: var(--muted); font-size: .74rem; }
 
-.btn-canva { background: linear-gradient(135deg, #00c4cc, #6420ff); color: #fff; text-decoration: none; display: inline-block; }
+.btn-canva { background: linear-gradient(135deg, oklch(0.78 0.17 55), oklch(0.66 0.19 48)); color: var(--text); text-decoration: none; display: inline-block; }
 .btn-canva:hover { filter: brightness(1.08); }
 .viewer-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
 .viewer-canva-note { margin: 8px 0 0; color: var(--muted); font-size: .85rem; }
@@ -131,7 +131,7 @@ body {
 
 .slide {
   position: relative;
-  background: var(--slide-bg, #191e2c);
+  background: var(--slide-bg, var(--panel));
   border: 1px solid var(--slide-accent, var(--line));
   border-radius: var(--radius);
   padding: 26px 26px 22px;
@@ -149,7 +149,7 @@ body {
 }
 .slide-title { margin: 6px 0 14px; font-size: 1.25rem; letter-spacing: -.01em; color: var(--slide-text, var(--text)); }
 .slide-bullets { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
-.slide-bullets li { color: var(--slide-muted, #cdd4e0); line-height: 1.45; font-size: .95rem; }
+.slide-bullets li { color: var(--slide-muted, oklch(0.88 0.008 180)); line-height: 1.45; font-size: .95rem; }
 
 .build-title { margin: 0 0 4px; font-size: 1.15rem; }
 .build-status { margin: 0 0 12px; color: var(--muted); font-size: .9rem; }
@@ -166,7 +166,7 @@ body {
   background: var(--panel); color: var(--text);
   width: min(520px, 92vw); padding: 26px;
 }
-.dialog::backdrop { background: rgba(4, 6, 12, .7); backdrop-filter: blur(3px); }
+.dialog::backdrop { background: oklch(0.08 0.008 195 / 70%); backdrop-filter: blur(3px); }
 .dialog h2 { margin: 0 0 18px; }
 .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 16px; }
 .field span { font-weight: 600; font-size: .92rem; }
