@@ -208,6 +208,20 @@ const TOOLS = {
       const action = String(args.action || "restart");
       if (!MANAGE_UNITS.has(unit)) return fail(`unit not allowed: ${unit}`);
       if (!["restart", "start", "stop", "reload"].includes(action)) return fail(`action not allowed: ${action}`);
+      /* Self-management special case: stopping this service would take the MCP
+         down for good, and a blocking restart kills the systemctl process mid-
+         command (systemd stops our cgroup), so queue the job without blocking
+         and let the response flush before the service cycles. */
+      if (unit === "zbox-mcp.service") {
+        if (action === "stop") {
+          return fail("cannot stop zbox-mcp.service through the MCP - it would not come back");
+        }
+        const queued = await run("systemctl", ["--no-block", action, unit], 10000);
+        if (!queued.ok) {
+          return fail(`${action} ${unit} failed: ${queued.stderr.trim() || queued.stdout.trim() || "unknown error"}`);
+        }
+        return text(`${action} ${unit} queued - this MCP is restarting itself; it will be back in a few seconds.`);
+      }
       const result = await run("systemctl", [action, unit], 30000);
       if (result.ok) {
         const state = await run("systemctl", ["is-active", unit], 5000);
