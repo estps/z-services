@@ -1412,6 +1412,8 @@ async function route(req, res) {
         usage: { used: usage.total, free: FREE_DECKS, left: admin ? 9999 : Math.max(0, FREE_DECKS - usage.total) },
         unlimited: admin,
         maxPages: admin ? ADMIN_MAX_PAGES : MAX_PAGES,
+        minPages: MIN_PAGES,
+        suggestedPages: [MIN_PAGES, Math.min(16, admin ? ADMIN_MAX_PAGES : MAX_PAGES)],
         budgetCap: MONTHLY_BUDGET_USD,
       }));
   }
@@ -1426,6 +1428,10 @@ async function route(req, res) {
   if (canvaMatch) {
     if (method === "POST") return handleDeckCanvaSend(req, res, user, canvaMatch[1]);
     return handleDeckCanva(req, res, user, canvaMatch[1]);
+  }
+  const imgMatch = /^\/img\/([a-f0-9]{8,32})\/(\d{2}\.(?:jpg|png))$/.exec(pathname);
+  if (imgMatch && (method === "GET" || method === "HEAD")) {
+    return handleDeckImage(req, res, user, imgMatch[1], imgMatch[2]);
   }
   if (pathname === "/api/generate" && method === "POST") {
     return handleGenerate(req, res, user);
