@@ -465,72 +465,6 @@ async function canvaAccessToken(uid) {
   return tokens.access_token;
 }
 
-async function buildPptx(deck) {
-  const { default: PptxGenJS } = await import("pptxgenjs");
-  const theme = normalizeTheme(deck.theme);
-  const pptx = new PptxGenJS();
-  pptx.defineLayout({ name: "Z16x9", width: 13.333, height: 7.5 });
-  pptx.layout = "Z16x9";
-  const serif = "Georgia";
-  const sans = "Segoe UI";
-
-  /* Elegant ornamental frame: hairline border + corner diamonds. */
-  const frame = (slide) => {
-    const thin = 0.022;
-    slide.addShape("rect", { x: 0.28, y: 0.28, w: 12.773, h: thin, fill: { color: theme.accent } });
-    slide.addShape("rect", { x: 0.28, y: 7.2, w: 12.773, h: thin, fill: { color: theme.accent } });
-    slide.addShape("rect", { x: 0.28, y: 0.28, w: thin, h: 6.942, fill: { color: theme.accent } });
-    slide.addShape("rect", { x: 13.031, y: 0.28, w: thin, h: 6.942, fill: { color: theme.accent } });
-    [[0.28, 0.28], [13.053, 0.28], [0.28, 7.222], [13.053, 7.222]].forEach(([x, y]) => {
-      slide.addShape("diamond", { x: x - 0.11, y: y - 0.11, w: 0.22, h: 0.22, fill: { color: theme.accent } });
-    });
-  };
-
-  /* Cover slide */
-  const cover = pptx.addSlide();
-  cover.background = { color: theme.bg };
-  frame(cover);
-  cover.addText(
-    String(deck.title || "Presentation").toUpperCase(),
-    {
-      x: 1.05, y: 2.05, w: 11.23, h: 2.3, align: "left", valign: "middle",
-      fontFace: serif, color: theme.text, fontSize: deck.title.length > 42 ? 40 : 48, charSpacing: 1,
-    }
-  );
-  cover.addShape("rect", { x: 1.08, y: 4.5, w: 1.6, h: 0.045, fill: { color: theme.accent } });
-  cover.addText("P R E S E N T A T I O N", {
-    x: 1.08, y: 4.72, w: 8, h: 0.5, fontFace: serif, italic: true, color: theme.accent, fontSize: 18, charSpacing: 3,
-  });
-  cover.addText("Created with Z Slides", {
-    x: 1.08, y: 6.78, w: 8, h: 0.35, fontFace: sans, color: theme.muted, fontSize: 10,
-  });
-
-  /* Content slides */
-  deck.slides.forEach((slide, index) => {
-    const s = pptx.addSlide();
-    s.background = { color: theme.bg };
-    frame(s);
-    s.addText(String(slide.title || ""), {
-      x: 0.95, y: 0.6, w: 11.5, h: 1.0, fontFace: serif, color: theme.text, fontSize: 30,
-    });
-    s.addShape("rect", { x: 0.98, y: 1.62, w: 1.1, h: 0.04, fill: { color: theme.accent } });
-    const bullets = (slide.bullets || []).map((b) => ({
-      text: b,
-      options: { bullet: { code: "25C6" }, color: theme.muted, breakLine: true },
-    }));
-    if (bullets.length) {
-      s.addText(bullets, {
-        x: 1.0, y: 2.0, w: 11.3, h: 4.5, fontFace: sans, fontSize: 18, lineSpacingMultiple: 1.35,
-      });
-    }
-    s.addText(String(index + 1).padStart(2, "0"), {
-      x: 12.15, y: 6.72, w: 0.85, h: 0.4, align: "right", fontFace: sans, color: theme.accent, fontSize: 11,
-    });
-  });
-
-  return await pptx.write({ outputType: "nodebuffer" });
-}
-
 function exportUrl(deckId) {
   const exp = Date.now() + EXPORT_TTL_MS;
   const mac = crypto.createHmac("sha256", `${SESSION_SECRET}:export`).update(`${deckId}.${exp}`).digest("hex").slice(0, 32);
@@ -547,16 +481,77 @@ async function getExportBuffer(deck, id) {
   try {
     return await fs.readFile(file);
   } catch {
-    const buffer = await buildPptx(deck);
+    const buffer = await buildPptx(deck, { imagesDir: IMAGES_DIR });
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, buffer);
     return buffer;
   }
 }
 
+/* Best-effort: when the Canva token carries the asset:write scope, upload the
+   deck's searched images into the user's Canva content library so they are
+   reusable there. Tokens connected before the scope was granted just log and
+   skip (per-user tokens cannot gain scopes retroactively). */
+async function uploadDeckImagesToCanva(deck, uid) {
+  const token = await canvaAccessToken(uid);
+  if (!token) return null;
+  const images = (Array.isArray(deck.slides) ? deck.slides : [])
+    .map((slide) => slide.image && slide.image.url)
+    .filter((url) => typeof url === "string" && url.startsWith("/img/"))
+    .slice(0, 4);
+  if (!images.length) return null;
+  const root = path.resolve(IMAGES_DIR);
+  let uploaded = 0;
+  for (const url of images) {
+    const target = path.resolve(root, url.slice("/img/".length));
+    if (!target.startsWith(root + path.sep)) continue;
+    const buffer = await fs.readFile(target).catch(() => null);
+    if (!buffer) continue;
+    const name = `Z Slides ${deck.id.slice(0, 4)} ${path.basename(url)}`.slice(0, 50);
+    let response;
+    try {
+      response = await fetch(CANVA_ASSET_UPLOADS_URL, {
+        method: "POST",
+        signal: AbortSignal.timeout(12000),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/octet-stream",
+          "Asset-Upload-Metadata": JSON.stringify({ name_base64: Buffer.from(name).toString("base64") }),
+        },
+        body: buffer,
+      });
+    } catch (err) {
+      console.error("[zslides] canva asset upload failed:", err.message);
+      break;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error("[zslides] canva asset upload skipped:", response.status, data.code || "", data.message || "");
+      return uploaded ? { uploaded } : { uploaded: 0, error: data.code || `http_${response.status}` };
+    }
+    const jobId = data.job?.id;
+    let assetId = data.job?.asset?.id || null;
+    for (let attempt = 0; attempt < 5 && !assetId && jobId; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const poll = await fetch(`${CANVA_ASSET_UPLOADS_URL}/${jobId}`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null);
+      if (!poll) break;
+      const status = await poll.json().catch(() => ({}));
+      if (status.job?.status === "success") assetId = status.job.asset?.id || null;
+      else if (status.job?.status === "failed") break;
+    }
+    if (assetId) uploaded += 1;
+  }
+  return { uploaded };
+}
+
 async function startCanvaImport(deck, uid) {
   const token = await canvaAccessToken(uid);
   if (!token) return null;
+  const assets = await uploadDeckImagesToCanva(deck, uid).catch((err) => {
+    console.error("[zslides] canva asset pass failed:", err);
+    return null;
+  });
+  if (assets && assets.uploaded) deck.canvaAssets = assets;
   await getExportBuffer(deck, deck.id);
   const response = await fetch(CANVA_IMPORTS_URL, {
     method: "POST",
