@@ -1003,25 +1003,55 @@ async function handleGenerateStream(req, res, user) {
       /* client disconnected */
     }
   };
-  emit({ type: "status", text: "Asking the AI designer…" });
   let sentSlides = 0;
   let sentMeta = false;
+  const streamMeta = { title: "", subtitle: "", theme: null };
+  const streamed = [];
   try {
+    emit({ type: "status", text: "Researching the topic…" });
+    const research = await researchTopic(prep.details, { stateDir: STATE_DIR }).catch(() => ({ facts: [], sources: [] }));
+    prep.research = research;
+    prep.avoid = await recentLayoutSequences(STATE_DIR, 6);
+    prep.prompt = buildPrompt(prep);
+    emit({
+      type: "status",
+      text: research.facts.length
+        ? `Found ${research.facts.length} research notes. Asking the AI designer…`
+        : "Asking the AI designer…",
+    });
     const { raw: rawText, usage } = await streamGeneration(prep, (meta, slides) => {
+      if (meta.title) streamMeta.title = meta.title;
+      if (meta.subtitle) streamMeta.subtitle = meta.subtitle;
+      if (meta.theme) streamMeta.theme = meta.theme;
       if (!sentMeta && (meta.title || meta.theme)) {
         sentMeta = true;
-        emit({ type: "meta", title: meta.title || "", theme: meta.theme || null });
+        emit({ type: "meta", title: streamMeta.title, subtitle: streamMeta.subtitle, theme: streamMeta.theme || null });
       }
       for (let i = sentSlides; i < slides.length; i += 1) {
-        emit({ type: "slide", index: i, slide: slides[i] });
+        const slide = normalizeSlide(slides[i]);
+        streamed.push(slide);
+        emit({ type: "slide", index: i, slide });
       }
       if (slides.length > sentSlides) {
         sentSlides = slides.length;
         emit({ type: "status", text: `Writing slide ${sentSlides}…` });
       }
     });
-    const generated = parseGenerated(rawText, prep.pages);
-    emit({ type: "meta", title: generated.title, theme: generated.theme });
+    let generated = null;
+    try {
+      generated = parseGenerated(rawText, prep.pages);
+    } catch (err) {
+      /* Long decks can arrive truncated; keep the complete streamed slides. */
+      if (!streamed.length) throw err;
+      generated = {
+        title: streamMeta.title || "Untitled presentation",
+        subtitle: streamMeta.subtitle || "",
+        theme: normalizeTheme(streamMeta.theme),
+        slides: streamed.slice(0, prep.pages),
+      };
+    }
+    ensureUniqueSequence(generated.slides, prep.avoid || []);
+    emit({ type: "meta", title: generated.title, subtitle: generated.subtitle, theme: generated.theme });
     for (let i = sentSlides; i < generated.slides.length; i += 1) {
       emit({ type: "slide", index: i, slide: generated.slides[i] });
     }
@@ -1043,11 +1073,25 @@ async function handleGenerateStream(req, res, user) {
     await addBudget(totalUsage || {});
     await bumpUsage(user.id);
     const id = crypto.randomBytes(8).toString("hex");
+    emit({ type: "status", text: "Sourcing images…" });
+    try {
+      const imageCount = await attachDeckImages(generated.slides, id, IMAGES_DIR, { max: 6 });
+      if (imageCount) {
+        const images = generated.slides
+          .map((slide, index) => (slide.image && slide.image.url ? { index, image: slide.image } : null))
+          .filter(Boolean);
+        emit({ type: "images", images });
+      }
+    } catch (err) {
+      console.error("[zslides] image sourcing failed:", err);
+    }
+    await recordLayoutSequence(STATE_DIR, layoutSequence(generated));
     const deck = {
       id,
       owner: user.id,
       ownerName: user.name,
       title: generated.title,
+      subtitle: generated.subtitle,
       theme: generated.theme,
       details: prep.details,
       invitees: prep.invitees,
@@ -1118,7 +1162,9 @@ async function handleGenerate(req, res, user) {
 
   let generated;
   try {
-    generated = await generateDeck(details, pages, invitees);
+    const research = await researchTopic(details, { stateDir: STATE_DIR }).catch(() => ({ facts: [], sources: [] }));
+    const avoid = await recentLayoutSequences(STATE_DIR, 6);
+    generated = await generateDeck(details, pages, invitees, research, avoid);
   } catch (err) {
     console.error("[zslides] generation failed:", err);
     return send(req, res, 502, { "Content-Type": "application/json" }, JSON.stringify({ error: "ai_failed", message: String(err.message || err) }));
@@ -1127,11 +1173,18 @@ async function handleGenerate(req, res, user) {
   await bumpUsage(user.id);
 
   const id = crypto.randomBytes(8).toString("hex");
+  try {
+    await attachDeckImages(generated.slides, id, IMAGES_DIR, { max: 6 });
+  } catch (err) {
+    console.error("[zslides] image sourcing failed:", err);
+  }
+  await recordLayoutSequence(STATE_DIR, layoutSequence(generated));
   const deck = {
     id,
     owner: user.id,
     ownerName: user.name,
     title: generated.title,
+    subtitle: generated.subtitle,
     theme: generated.theme,
     details,
     invitees,
