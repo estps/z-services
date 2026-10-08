@@ -343,13 +343,17 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
         .map((entry) => `- ${entry.seq}`)
         .join("\n")}`
     : "";
+  const structure =
+    target >= 6
+      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; use at least 2 "section" dividers; use at least 4 DISTINCT layouts overall; include at least 2 slides from [quote, stats, timeline, comparison, image]; never repeat the same layout 3 times in a row; avoid two adjacent slides with the same layout.`
+      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; use at least 2 distinct layouts; avoid two adjacent slides with the same layout.`;
   return [
     "You are a senior presentation designer. Create a visually varied, premium slide deck.",
     `Return STRICT JSON only, no markdown, no code fences, exactly this shape:`,
     `{"title":"Deck title","subtitle":"One-line deck subtitle","theme":{"name":"Short theme name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"layout":"cover","title":"...","subtitle":"...","notes":"speaker note"},{"layout":"bullets","title":"...","bullets":["..."],"notes":"..."},{"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}]}`,
     `Allowed layout values ONLY: ${LAYOUTS.join(", ")}.`,
     `slides MUST contain EXACTLY ${target} slide objects - count them, fill every one, no placeholders.`,
-    `Structural rules: slide 1 layout "cover"; last slide layout "closing"; use at least 2 "section" dividers; use at least 4 DISTINCT layouts overall; include at least 2 slides from [quote, stats, timeline, comparison, image]; never repeat the same layout 3 times in a row; avoid two adjacent slides with the same layout.`,
+    structure,
     `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split.`,
     `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
     `Theme: derive from the topic's mood, make it distinctive, palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT "#"; background must be dark or light enough that "text" is clearly readable; "accent" must pop on the background.`,
