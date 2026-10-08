@@ -719,7 +719,7 @@ async function prepareGeneration(user, body) {
   const dynamicMax = Math.max(MIN_PAGES, Math.min(16, maxPages));
   const pages = Number.isFinite(requested) && requested > 0
     ? Math.max(1, Math.min(maxPages, Math.floor(requested)))
-    : crypto.randomInt(MIN_PAGES, dynamicMax + 1);
+    : Math.min(maxPages, crypto.randomInt(MIN_PAGES, dynamicMax + 1));
   const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
     .map((entry) => String(entry).trim())
     .filter(Boolean)
@@ -1144,7 +1144,7 @@ async function handleGenerate(req, res, user) {
   const dynamicMax = Math.max(MIN_PAGES, Math.min(16, maxPages));
   const pages = Number.isFinite(requested) && requested > 0
     ? Math.max(1, Math.min(maxPages, Math.floor(requested)))
-    : crypto.randomInt(MIN_PAGES, dynamicMax + 1);
+    : Math.min(maxPages, crypto.randomInt(MIN_PAGES, dynamicMax + 1));
   const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
     .map((entry) => String(entry).trim())
     .filter(Boolean)

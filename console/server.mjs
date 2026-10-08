@@ -78,6 +78,64 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+/* ---------------- Supabase admin session (application form editor) ----------------
+   Each signed-in admin's short-lived Supabase access token is kept in memory
+   only. Password logins store the token from the token endpoint; the OAuth
+   callback receives a fresh access token from the Z Chat consent page. When a
+   token expires the API answers 401 { reauth_required } and the UI asks the
+   admin to sign in again. All writes still go through Postgres RLS as that
+   admin: no service-role key is used anywhere. */
+const REST = `${SUPA_URL}/rest/v1`;
+const adminTokens = new Map(); // uid -> { token, exp }
+
+function rememberToken(uid, accessToken) {
+  if (!uid || !accessToken) return;
+  let exp = Date.now() + 3600_000;
+  try {
+    const part = String(accessToken).split(".")[1] || "";
+    const payload = JSON.parse(Buffer.from(part, "base64url").toString());
+    if (payload && typeof payload.exp === "number") exp = payload.exp * 1000;
+  } catch {
+    /* keep the default one-hour TTL */
+  }
+  adminTokens.set(uid, { token: accessToken, exp });
+}
+
+function tokenFor(uid) {
+  const entry = adminTokens.get(uid);
+  if (!entry) return null;
+  if (entry.exp - 30_000 <= Date.now()) {
+    adminTokens.delete(uid);
+    return null;
+  }
+  return entry.token;
+}
+
+async function supabaseAdmin(sess, path, init = {}) {
+  const token = tokenFor(sess.uid);
+  if (!token) return { ok: false, status: 401, body: { error: "reauth_required" } };
+  const res = await fetch(`${REST}${path}`, {
+    ...init,
+    headers: {
+      apikey: SUPA_ANON,
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(init.headers || {}),
+    },
+  });
+  let body = null;
+  try {
+    body = res.status === 204 ? null : await res.json();
+  } catch {
+    body = null;
+  }
+  if (res.status === 401) {
+    adminTokens.delete(sess.uid);
+    return { ok: false, status: 401, body: { error: "reauth_required" } };
+  }
+  return { ok: res.ok, status: res.status, body };
+}
+
 const loginHits = [];
 function rateLimited() {
   const now = Date.now();
@@ -211,6 +269,10 @@ async function handleApproveOauth(req, res) {
     }
     if (!adminOk) return json(res, 403, { error: "not_admin" }, cors);
 
+    // Keep this admin's Supabase token (memory only) so the application-form
+    // editor can write through RLS with the admin's own session.
+    rememberToken(user.id, match[1]);
+
     const raw = (await readBody(req)) || "{}";
     let body = null;
     try {
@@ -335,6 +397,7 @@ const server = http.createServer(async (req, res) => {
       const profile = await supabaseProfile(token.access_token, token.user.id);
       const isAdmin = profile?.is_admin === true || ADMIN_IDS.has(token.user.id);
       if (!isAdmin) return json(res, 403, { error: "Not an admin account" });
+      rememberToken(token.user.id, token.access_token);
       const payload = Buffer.from(
         JSON.stringify({ kind: "session", uid: token.user.id, email, exp: Date.now() + 12 * 3600_000 }),
       ).toString("base64url");
