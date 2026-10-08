@@ -248,43 +248,9 @@ async function listDecks(uid) {
 
 /* ---------------- DeepSeek ---------------- */
 
-function buildPrompt(details, pages, invitees) {
-  const audience = invitees && invitees.length ? `Intended audience/invitees: ${invitees.join(", ")}.` : "";
-  return [
-    "You are a senior presentation designer. Create a concise, professional slide deck.",
-    `Return STRICT JSON only, no markdown, no code fences, with this exact shape:`,
-    `{"title": "Deck title", "theme": {"bg": "1E1B16", "accent": "C9A227", "text": "FFFFFF", "muted": "CFC6AE"}, "slides": [{"title": "Slide title", "bullets": ["point", "point", "point"]}]}`,
-    `Rules: the slides array MUST contain EXACTLY ${pages} slide objects - count them before you finish and add more if short;`,
-    `3-5 short bullets per slide; no bullet longer than 16 words;`,
-    `plain text only; make the content specific to the brief and easy to present live.`,
-    `Choose theme colors as 6-digit hex (no #) that fit the topic's mood and look like a premium designed template:`,
-    `dark, elegant backgrounds (history/luxury -> deep charcoal bg with gold accent and cream text; tech -> deep navy with cyan accent;`,
-    `nature -> deep forest green with warm cream; bold/business -> near-black with vivid accent).`,
-    `"text" must be near-white and clearly readable on "bg"; "muted" is for bullet text; "accent" pops on "bg".`,
-    audience,
-    `Brief: ${details}`,
-  ].filter(Boolean).join("\n");
-}
-
-const HEX = /^[0-9a-fA-F]{6}$/;
-
-function normalizeTheme(raw) {
-  const fallback = { bg: "1E1B16", accent: "C9A227", text: "FFFFFF", muted: "CFC6AE" };
-  if (!raw || typeof raw !== "object") return fallback;
-  const pick = (value, def) => {
-    const cleaned = String(value || "").replace(/^#/, "").trim();
-    return HEX.test(cleaned) ? cleaned.toUpperCase() : def;
-  };
-  return {
-    bg: pick(raw.bg, fallback.bg),
-    accent: pick(raw.accent, fallback.accent),
-    text: pick(raw.text, fallback.text),
-    muted: pick(raw.muted, fallback.muted),
-  };
-}
-
-async function generateDeck(details, pages, invitees) {
+async function generateDeck(details, pages, invitees, research, avoidSequences) {
   if (!DEEPSEEK_API_KEY) throw new Error("server is missing its AI key");
+  const prompt = buildPrompt({ details, pages, invitees, research, avoidSequences });
   const response = await fetch(DEEPSEEK_URL, {
     method: "POST",
     headers: {
@@ -295,11 +261,11 @@ async function generateDeck(details, pages, invitees) {
       model: DEEPSEEK_MODEL,
       messages: [
         { role: "system", content: "You output only valid JSON. Never wrap it in markdown." },
-        { role: "user", content: buildPrompt(details, pages, invitees) },
+        { role: "user", content: prompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000,
-      temperature: 0.7,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      temperature: 0.8,
     }),
   });
   if (!response.ok) {
@@ -322,38 +288,27 @@ async function generateDeck(details, pages, invitees) {
       }
     }
   }
-  if (!parsed || !Array.isArray(parsed.slides) || !parsed.slides.length) {
-    throw new Error("AI returned an unexpected format; please try again");
+  let generated = null;
+  try {
+    generated = normalizeDeck(parsed, pages);
+  } catch {
+    generated = null;
   }
-  const slides = parsed.slides
-    .slice(0, pages)
-    .map((slide) => ({
-      title: String(slide.title || "").slice(0, 120) || "Untitled slide",
-      bullets: (Array.isArray(slide.bullets) ? slide.bullets : [])
-        .slice(0, 6)
-        .map((b) => String(b).slice(0, 220)),
-    }))
-    .filter((slide) => slide.title || slide.bullets.length);
-  if (!slides.length) throw new Error("AI returned an empty deck; please try again");
-  let finalSlides = slides;
+  if (!generated) throw new Error("AI returned an unexpected format; please try again");
   let usageTotal = usage;
-  if (finalSlides.length < pages) {
+  if (generated.slides.length < pages) {
     try {
-      const extra = await completeMissingSlides({ details, pages, invitees }, pages, finalSlides, null);
+      const extra = await completeMissingSlides({ details, pages, invitees, research, avoidSequences }, pages, generated.slides, null);
       if (extra.list.length) {
-        finalSlides = finalSlides.concat(extra.list);
+        generated.slides = generated.slides.concat(extra.list);
         usageTotal = mergeUsage(usageTotal, extra.usage);
       }
     } catch (err) {
       console.error("[zslides] slide expansion (sync) failed:", err);
     }
   }
-  return {
-    title: String(parsed.title || details.slice(0, 80) || "Untitled presentation").slice(0, 140),
-    theme: normalizeTheme(parsed.theme),
-    slides: finalSlides,
-    usage: usageTotal,
-  };
+  ensureUniqueSequence(generated.slides, avoidSequences || []);
+  return { ...generated, usage: usageTotal };
 }
 
 /* ---------------- OAuth (custom Z Chat consent flow) ---------------- */
