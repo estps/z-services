@@ -57,7 +57,10 @@ const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
 const CANVA_GENERATIONS_URL = "https://api.canva.com/rest/v1/generations";
 const CANVA_CAPS_URL = "https://api.canva.com/rest/v1/users/me/capabilities";
 const CANVA_ASSET_UPLOADS_URL = "https://api.canva.com/rest/v1/asset-uploads";
-const CANVA_SCOPE = "design:content:write profile:read";
+/* Extra scopes (asset:write, brandtemplate:meta:read, brandtemplate:content:read)
+   can be requested via CANVA_SCOPE in the env file once enabled on the Canva
+   integration; existing user tokens must reconnect to receive them. */
+const CANVA_SCOPE = process.env.CANVA_SCOPE || "design:content:write profile:read";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
