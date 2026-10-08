@@ -429,6 +429,115 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, { lines });
     }
+
+    /* -------- Application form editor (writes via the admin's Supabase session) -------- */
+    if (req.method === "GET" && p === "/api/applications/form") {
+      const r = await supabaseAdmin(
+        sess,
+        "/application_form?select=id,label,placeholder,sort_order,enabled,updated_at&order=sort_order.asc,created_at.asc",
+      );
+      return json(res, r.ok ? 200 : r.status, r.ok ? { questions: r.body } : r.body);
+    }
+    if (req.method === "POST" && p === "/api/applications/form") {
+      if (req.headers["x-zc"] !== "console") return json(res, 400, { error: "bad request" });
+      let body = null;
+      try {
+        body = JSON.parse((await readBody(req)) || "{}");
+      } catch {
+        body = null;
+      }
+      const label = typeof body?.label === "string" ? body.label.trim() : "";
+      const placeholder = typeof body?.placeholder === "string" ? body.placeholder.trim() : "";
+      if (!label || label.length > 120) {
+        return json(res, 400, { error: "label is required (max 120 chars)" });
+      }
+      if (placeholder.length > 200) {
+        return json(res, 400, { error: "placeholder is too long (max 200 chars)" });
+      }
+      const last = await supabaseAdmin(
+        sess,
+        "/application_form?select=sort_order&order=sort_order.desc&limit=1",
+      );
+      if (!last.ok) return json(res, last.status, last.body);
+      const max =
+        Array.isArray(last.body) && last.body[0] ? Number(last.body[0].sort_order) || 0 : 0;
+      const r = await supabaseAdmin(sess, "/application_form", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ label, placeholder, sort_order: max + 1, enabled: true }),
+      });
+      return json(
+        res,
+        r.ok ? 200 : r.status,
+        r.ok ? { question: Array.isArray(r.body) ? r.body[0] : null } : r.body,
+      );
+    }
+    if (req.method === "PATCH" && p === "/api/applications/form") {
+      if (req.headers["x-zc"] !== "console") return json(res, 400, { error: "bad request" });
+      let body = null;
+      try {
+        body = JSON.parse((await readBody(req)) || "{}");
+      } catch {
+        body = null;
+      }
+      const id = typeof body?.id === "string" ? body.id.trim() : "";
+      if (!id) return json(res, 400, { error: "id is required" });
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.label === "string") {
+        const label = body.label.trim();
+        if (!label || label.length > 120) return json(res, 400, { error: "label must be 1-120 chars" });
+        patch.label = label;
+      }
+      if (typeof body.placeholder === "string") {
+        const placeholder = body.placeholder.trim();
+        if (placeholder.length > 200) {
+          return json(res, 400, { error: "placeholder is too long (max 200 chars)" });
+        }
+        patch.placeholder = placeholder;
+      }
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+      if (Number.isInteger(body.sort_order)) patch.sort_order = body.sort_order;
+      const r = await supabaseAdmin(sess, `/application_form?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) return json(res, r.status, r.body);
+      return json(res, 200, { question: Array.isArray(r.body) ? r.body[0] : null });
+    }
+    if (req.method === "POST" && p === "/api/applications/form/reorder") {
+      if (req.headers["x-zc"] !== "console") return json(res, 400, { error: "bad request" });
+      let body = null;
+      try {
+        body = JSON.parse((await readBody(req)) || "{}");
+      } catch {
+        body = null;
+      }
+      const ids = Array.isArray(body?.ids)
+        ? body.ids.filter((id) => typeof id === "string" && id).slice(0, 50)
+        : [];
+      if (ids.length === 0) return json(res, 400, { error: "ids are required" });
+      for (let index = 0; index < ids.length; index += 1) {
+        const r = await supabaseAdmin(
+          sess,
+          `/application_form?id=eq.${encodeURIComponent(ids[index])}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ sort_order: index + 1, updated_at: new Date().toISOString() }),
+          },
+        );
+        if (!r.ok) return json(res, r.status, r.body);
+      }
+      return json(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && p === "/api/applications/submissions") {
+      const r = await supabaseAdmin(sess, "/rpc/admin_application_submissions", {
+        method: "POST",
+        body: JSON.stringify({ _limit: 25 }),
+      });
+      return json(res, r.ok ? 200 : r.status, r.ok ? { submissions: r.body } : r.body);
+    }
+
     if (req.method === "POST" && p === "/api/restart") {
       if (req.headers["x-zc"] !== "console") return json(res, 400, { error: "bad request" });
       const body = JSON.parse((await readBody(req)) || "{}");

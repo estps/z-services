@@ -66,6 +66,24 @@
       <div class="msg" id="actionMsg"></div>
     </div>
     <div class="card">
+      <h2>Application form</h2>
+      <div class="muted" style="margin-bottom:10px">
+        Questions every new sign-up answers before they can chat. Changes apply immediately;
+        disabled questions are hidden but keep their old answers.
+      </div>
+      <div id="formQuestions"></div>
+      <div class="row" style="margin-top:12px">
+        <input id="newQuestionLabel" placeholder="New question label" maxlength="120" style="flex:2;margin:0" />
+        <input id="newQuestionPlaceholder" placeholder="Placeholder text (optional)" maxlength="200" style="flex:2;margin:0" />
+        <button class="primary" id="addQuestionBtn">Add question</button>
+      </div>
+      <div class="msg" id="formMsg"></div>
+    </div>
+    <div class="card">
+      <h2>Recent application answers</h2>
+      <div id="submissions" class="muted">loading…</div>
+    </div>
+    <div class="card">
       <h2>System</h2>
       <div class="stats" id="sysStats"></div>
     </div>
@@ -127,7 +145,205 @@
   async function showDash() {
     $("loginCard").classList.add("hide");
     $("dash").classList.remove("hide");
-    await Promise.all([loadHealth(), loadDeploy()]);
+    await Promise.all([loadHealth(), loadDeploy(), loadForm(), loadSubmissions()]);
+  }
+
+  /* ---------------- Application form editor ---------------- */
+  let formQuestions = [];
+
+  function formMsg(text, isError = false) {
+    const el = $("formMsg");
+    el.style.color = isError ? "#f2555a" : "#46a758";
+    el.textContent = text;
+  }
+
+  function reauthNotice(container) {
+    container.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = "Admin session expired - ";
+    const link = document.createElement("a");
+    link.href = "/auth/login";
+    link.textContent = "sign in again";
+    container.append(span, link, document.createTextNode(" to edit."));
+  }
+
+  async function loadForm() {
+    const { status, body } = await api("/api/applications/form");
+    if (status === 401 && body.error === "reauth_required") {
+      reauthNotice($("formQuestions"));
+      return;
+    }
+    formQuestions = Array.isArray(body.questions) ? body.questions : [];
+    renderForm();
+  }
+
+  function renderForm() {
+    const wrap = $("formQuestions");
+    wrap.textContent = "";
+    if (!formQuestions.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No questions yet - add the first one below.";
+      wrap.appendChild(empty);
+      return;
+    }
+    formQuestions.forEach((question, index) => {
+      const row = document.createElement("div");
+      row.className = "svc";
+      row.style.flexWrap = "wrap";
+      row.style.marginBottom = "6px";
+
+      const handle = document.createElement("span");
+      handle.className = "st";
+      handle.textContent = `${index + 1}.`;
+
+      const label = document.createElement("input");
+      label.value = question.label || "";
+      label.maxLength = 120;
+      label.style.flex = "2";
+      label.style.margin = "0";
+      label.setAttribute("aria-label", "Question label");
+
+      const placeholder = document.createElement("input");
+      placeholder.value = question.placeholder || "";
+      placeholder.maxLength = 200;
+      placeholder.style.flex = "2";
+      placeholder.style.margin = "0";
+      placeholder.setAttribute("aria-label", "Question placeholder");
+
+      const enabledWrap = document.createElement("label");
+      enabledWrap.className = "muted";
+      enabledWrap.style.display = "flex";
+      enabledWrap.style.alignItems = "center";
+      enabledWrap.style.gap = "5px";
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = question.enabled !== false;
+      enabled.style.margin = "0";
+      enabled.style.width = "auto";
+      enabledWrap.append(enabled, document.createTextNode("shown"));
+
+      const up = document.createElement("button");
+      up.textContent = "\u2191";
+      up.title = "Move up";
+      up.disabled = index === 0;
+      const down = document.createElement("button");
+      down.textContent = "\u2193";
+      down.title = "Move down";
+      down.disabled = index === formQuestions.length - 1;
+      up.onclick = () => moveQuestion(index, -1);
+      down.onclick = () => moveQuestion(index, 1);
+
+      const save = document.createElement("button");
+      save.className = "primary";
+      save.textContent = "Save";
+      save.onclick = async () => {
+        const result = await api("/api/applications/form", {
+          method: "PATCH",
+          body: JSON.stringify({
+            id: question.id,
+            label: label.value,
+            placeholder: placeholder.value,
+            enabled: enabled.checked,
+          }),
+        });
+        if (result.status !== 200) {
+          const err = result.body.error || "could not save";
+          if (err === "reauth_required") return reauthNotice($("formMsg"));
+          return formMsg(err, true);
+        }
+        formMsg("Saved.");
+        loadForm();
+      };
+
+      row.append(handle, label, placeholder, enabledWrap, up, down, save);
+      wrap.appendChild(row);
+    });
+  }
+
+  async function moveQuestion(index, delta) {
+    const next = index + delta;
+    if (next < 0 || next >= formQuestions.length) return;
+    const ids = formQuestions.map((question) => question.id);
+    const moved = ids.splice(index, 1)[0];
+    ids.splice(next, 0, moved);
+    const { status, body } = await api("/api/applications/form/reorder", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    });
+    if (status !== 200) return formMsg(body.error || "could not reorder", true);
+    await loadForm();
+  }
+
+  $("addQuestionBtn").onclick = async () => {
+    const label = $("newQuestionLabel").value.trim();
+    const placeholder = $("newQuestionPlaceholder").value.trim();
+    if (!label) return formMsg("Enter a question label first.", true);
+    const { status, body } = await api("/api/applications/form", {
+      method: "POST",
+      body: JSON.stringify({ label, placeholder }),
+    });
+    if (status !== 200) {
+      if (body.error === "reauth_required") return reauthNotice($("formMsg"));
+      return formMsg(body.error || "could not add question", true);
+    }
+    $("newQuestionLabel").value = "";
+    $("newQuestionPlaceholder").value = "";
+    formMsg("Question added.");
+    loadForm();
+  };
+
+  async function loadSubmissions() {
+    const { status, body } = await api("/api/applications/submissions");
+    const wrap = $("submissions");
+    wrap.textContent = "";
+    if (status === 401 && body.error === "reauth_required") {
+      reauthNotice(wrap);
+      return;
+    }
+    const list = Array.isArray(body.submissions) ? body.submissions : [];
+    if (!list.length) {
+      wrap.textContent = "No submissions yet.";
+      return;
+    }
+    const labels = new Map(formQuestions.map((question) => [question.id, question.label]));
+    for (const submission of list) {
+      const row = document.createElement("div");
+      row.className = "svc";
+      row.style.display = "block";
+      row.style.marginBottom = "8px";
+      row.style.whiteSpace = "normal";
+
+      const head = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = submission.display_name || "user";
+      const meta = document.createElement("span");
+      meta.className = "st";
+      meta.style.marginLeft = "8px";
+      const when = submission.application_submitted_at
+        ? new Date(submission.application_submitted_at).toLocaleString()
+        : "";
+      meta.textContent = `@${submission.username || "no-username"} \u00b7 ${submission.application_status} \u00b7 ${when}`;
+      head.append(name, meta);
+      row.appendChild(head);
+
+      const answers =
+        submission.application_answers && typeof submission.application_answers === "object"
+          ? submission.application_answers
+          : {};
+      for (const [questionId, answer] of Object.entries(answers)) {
+        const line = document.createElement("div");
+        line.className = "muted";
+        line.style.marginTop = "4px";
+        const questionLabel = document.createElement("strong");
+        questionLabel.textContent = `${labels.get(questionId) || "Removed question"}: `;
+        const value = document.createElement("span");
+        value.textContent = String(answer);
+        line.append(questionLabel, value);
+        row.appendChild(line);
+      }
+      wrap.appendChild(row);
+    }
   }
 
   $("loginBtn").onclick = async () => {
