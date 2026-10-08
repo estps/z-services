@@ -787,6 +787,14 @@ function extractMeta(raw) {
       meta.title = titleMatch[1];
     }
   }
+  const subtitleMatch = /"subtitle"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw);
+  if (subtitleMatch) {
+    try {
+      meta.subtitle = JSON.parse(`"${subtitleMatch[1]}"`);
+    } catch {
+      meta.subtitle = subtitleMatch[1];
+    }
+  }
   const themeKey = raw.indexOf('"theme"');
   if (themeKey >= 0) {
     const open = raw.indexOf("{", themeKey);
@@ -832,11 +840,11 @@ async function streamGeneration(prep, onProgress) {
       model: DEEPSEEK_MODEL,
       messages: [
         { role: "system", content: "You output only valid JSON. Never wrap it in markdown." },
-        { role: "user", content: buildPrompt(prep.details, prep.pages, prep.invitees) },
+        { role: "user", content: prep.prompt || buildPrompt(prep) },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000,
-      temperature: 0.7,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      temperature: 0.8,
       stream: true,
       stream_options: { include_usage: true },
     }),
