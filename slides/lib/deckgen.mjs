@@ -176,13 +176,13 @@ export function normalizeSlide(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   let layout = s(source.layout || source.type || source.kind, 20).toLowerCase();
   if (!LAYOUTS.includes(layout)) layout = inferLayout(source);
-  const slide = { layout, title: s(source.title, 140) || "Untitled slide" };
   const subtitle = s(source.subtitle || source.kicker, 200);
+  const bullets = list(source.bullets, 8, 240);
+  const slide = { layout, title: s(source.title, 140) || subtitle || bullets[0] || "Overview" };
   if (subtitle) slide.subtitle = subtitle;
   const notes = s(source.notes, 800);
   if (notes) slide.notes = notes;
 
-  const bullets = list(source.bullets, 8, 240);
   const stats = (Array.isArray(source.stats) ? source.stats : [])
     .map((entry) => ({ value: s(entry && entry.value, 24), label: s(entry && entry.label, 80) }))
     .filter((entry) => entry.value || entry.label)
@@ -353,6 +353,7 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     `{"title":"Deck title","subtitle":"One-line deck subtitle","theme":{"name":"Short theme name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"layout":"cover","title":"...","subtitle":"...","notes":"speaker note"},{"layout":"bullets","title":"...","bullets":["..."],"notes":"..."},{"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}]}`,
     `Allowed layout values ONLY: ${LAYOUTS.join(", ")}.`,
     `slides MUST contain EXACTLY ${target} slide objects - count them, fill every one, no placeholders.`,
+    `Every slide - including section dividers - must have a specific, descriptive title; never output an empty or "Untitled" title.`,
     structure,
     `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split.`,
     `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
