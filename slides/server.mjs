@@ -13,6 +13,19 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { attachDeckImages, researchTopic } from "./lib/websearch.mjs";
+import {
+  buildPrompt,
+  ensureUniqueSequence,
+  layoutSequence,
+  normalizeDeck,
+  normalizeSlide,
+  normalizeTheme,
+  recentLayoutSequences,
+  recordLayoutSequence,
+  upgradeDeck,
+} from "./lib/deckgen.mjs";
+import { buildPptx } from "./lib/pptx.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +56,7 @@ const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
 const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
 const CANVA_GENERATIONS_URL = "https://api.canva.com/rest/v1/generations";
 const CANVA_CAPS_URL = "https://api.canva.com/rest/v1/users/me/capabilities";
+const CANVA_ASSET_UPLOADS_URL = "https://api.canva.com/rest/v1/asset-uploads";
 const CANVA_SCOPE = "design:content:write profile:read";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
@@ -53,8 +67,12 @@ const ADMIN_IDS = new Set(
     .map((entry) => entry.trim())
     .filter(Boolean)
 );
-const MAX_PAGES = Number(process.env.MAX_PAGES || 6);
+/* Dynamic decks: the AI is asked for 8-16 slides with varied layouts. */
+const MAX_PAGES = Number(process.env.MAX_PAGES || 16);
 const ADMIN_MAX_PAGES = Number(process.env.ADMIN_MAX_PAGES || 20);
+const MIN_PAGES = Number(process.env.MIN_PAGES || 8);
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 7000);
+const IMAGES_DIR = path.join(STATE_DIR, "images");
 const MONTHLY_BUDGET_USD = Number(process.env.MONTHLY_BUDGET_USD || 5);
 /* deepseek-chat pricing, USD per 1M tokens (approx) */
 const COST_IN_PER_M = Number(process.env.COST_IN_PER_M || 0.27);
