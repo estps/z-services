@@ -715,7 +715,11 @@ async function prepareGeneration(user, body) {
   const admin = ADMIN_IDS.has(user.id);
   const maxPages = admin ? ADMIN_MAX_PAGES : MAX_PAGES;
   const details = String(body.details || "").trim();
-  const pages = Math.max(1, Math.min(maxPages, Number(body.pages) || maxPages));
+  const requested = Number(body.pages);
+  const dynamicMax = Math.max(MIN_PAGES, Math.min(16, maxPages));
+  const pages = Number.isFinite(requested) && requested > 0
+    ? Math.max(1, Math.min(maxPages, Math.floor(requested)))
+    : crypto.randomInt(MIN_PAGES, dynamicMax + 1);
   const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
     .map((entry) => String(entry).trim())
     .filter(Boolean)
@@ -1136,7 +1140,11 @@ async function handleGenerate(req, res, user) {
   const admin = ADMIN_IDS.has(user.id);
   const maxPages = admin ? ADMIN_MAX_PAGES : MAX_PAGES;
   const details = String(body.details || "").trim();
-  const pages = Math.max(1, Math.min(maxPages, Number(body.pages) || maxPages));
+  const requested = Number(body.pages);
+  const dynamicMax = Math.max(MIN_PAGES, Math.min(16, maxPages));
+  const pages = Number.isFinite(requested) && requested > 0
+    ? Math.max(1, Math.min(maxPages, Math.floor(requested)))
+    : crypto.randomInt(MIN_PAGES, dynamicMax + 1);
   const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
     .map((entry) => String(entry).trim())
     .filter(Boolean)
@@ -1295,7 +1303,27 @@ async function handleDeck(req, res, user, id) {
   if (!deck || deck.owner !== user.id) {
     return send(req, res, 404, { "Content-Type": "application/json" }, JSON.stringify({ error: "not_found" }));
   }
-  send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, JSON.stringify({ deck }));
+  send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    JSON.stringify({ deck: upgradeDeck(deck) }));
+}
+
+/* Deck images sourced from free web image search. Auth-gated to the deck
+   owner (the <img> tags on the deck page are same-site and send cookies). */
+async function handleDeckImage(req, res, user, id, file) {
+  const deck = await readJson(path.join(STATE_DIR, "decks", `${id}.json`), null);
+  if (!deck || deck.owner !== user.id) {
+    return send(req, res, 404, { "Content-Type": "text/plain" }, "Not found");
+  }
+  const target = path.join(IMAGES_DIR, id, file);
+  try {
+    const data = await fs.readFile(target);
+    return send(req, res, 200, {
+      "Content-Type": MIME[path.extname(file).toLowerCase()] || "image/jpeg",
+      "Cache-Control": "private, max-age=86400",
+    }, data);
+  } catch {
+    return send(req, res, 404, { "Content-Type": "text/plain" }, "Not found");
+  }
 }
 
 /* ---------------- static + router ---------------- */

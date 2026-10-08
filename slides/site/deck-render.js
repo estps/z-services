@@ -113,8 +113,8 @@
     { key: "ember", re: /ember|warm|sunset|fire|autumn|energy|sport|heat/i, motifs: ["blobs", "rays", "stripes"], radii: [14, 20, 26], display: "sans", weight: 850, spacing: "-0.02em" },
     { key: "paper", re: /paper|editorial|elegant|luxury|luxe|classic|heritage|history|serif/i, motifs: ["dots", "grid", "rings"], radii: [4, 6, 10], display: "serif", weight: 700, spacing: "-0.01em" },
     { key: "mint", re: /mint|fresh|nature|forest|eco|calm|wellness|garden|green/i, motifs: ["blobs", "waves", "dots"], radii: [22, 28, 34], display: "sans", weight: 700, spacing: "0" },
-    { key: "violet", re: /violet|purple|neon|playful|creative|fun|party|pink|magenta/i, motifs: ["rings", "stripes", "blobs"], radii: [20, 26, 32], display: "sans", weight: 850, spacing: "-0.02em" },
     { key: "sunrise", re: /sunrise|golden|summer|happy|sunny|yellow|orange|festival/i, motifs: ["rays", "blobs", "orbits"], radii: [16, 22, 28], display: "sans", weight: 800, spacing: "-0.01em" },
+    { key: "violet", re: /violet|purple|neon|playful|creative|fun|party|pink|magenta/i, motifs: ["rings", "stripes", "blobs"], radii: [20, 26, 32], display: "sans", weight: 850, spacing: "-0.02em" },
     { key: "mono", re: /mono|minimal|corporate|professional|business|executive|swiss|architect/i, motifs: ["grid", "stripes", "dots"], radii: [2, 4, 8], display: "sans", weight: 700, spacing: "-0.02em" },
     { key: "noir", re: /noir|cinematic|drama|stealth|dark/i, motifs: ["orbits", "rings", "stripes"], radii: [12, 16, 22], display: "sans", weight: 800, spacing: "-0.01em" },
     { key: "studio", re: /studio|clean|modern|product|portfolio|design/i, motifs: ["grid", "blobs", "waves"], radii: [12, 18, 24], display: "sans", weight: 750, spacing: "-0.01em" }
@@ -547,7 +547,7 @@
   LAYOUTS.section = function (cv, s, ctx) {
     decorFor(cv, ctx);
     var body = div("dc-body dc-section");
-    body.appendChild(div("dc-section-num", ctx.total ? pad(ctx.index + 1) : String(ctx.index + 1)));
+    cv.appendChild(div("dc-section-num", ctx.total ? pad(ctx.index + 1) : String(ctx.index + 1)));
     var main = div("dc-section-main");
     main.appendChild(div("dc-kicker", "Section"));
     main.appendChild(titleBlock("dc-section-title", s.title || ""));
