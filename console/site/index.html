@@ -357,7 +357,7 @@
   };
   $("oauthBtn").onclick = () => { location.href = "/auth/login"; };
   $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
-  $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); };
+  $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); loadForm(); loadSubmissions(); };
   $("logoutBtn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
   document.querySelectorAll("[data-restart]").forEach((btn) => {
     btn.onclick = async () => {
