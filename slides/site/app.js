@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  var state = { me: null, decks: [], current: null, canva: null, canvaPoll: 0 };
+  var state = { me: null, decks: [], current: null, currentTheme: null, canva: null, canvaPoll: 0 };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -53,18 +53,23 @@
     q.appendChild(el("span", "quota-label", usage.left === 1 ? "free deck left" : "free decks left"));
   }
 
-  function applyTheme(container, theme) {
-    if (!container) return;
-    if (theme && theme.bg) {
-      container.style.setProperty("--slide-bg", "#" + theme.bg);
-      container.style.setProperty("--slide-accent", "#" + theme.accent);
-      container.style.setProperty("--slide-text", "#" + theme.text);
-      container.style.setProperty("--slide-muted", "#" + theme.muted);
-    } else {
-      ["--slide-bg", "--slide-accent", "--slide-text", "--slide-muted"].forEach(function (name) {
-        container.style.removeProperty(name);
-      });
-    }
+  /* ---------------------------------------------------------------- rendering */
+
+  function themeOf(raw) {
+    return window.ZDeck ? window.ZDeck.normalizeTheme(raw || {}) : null;
+  }
+
+  function renderSlidesInto(container, slides, theme, deckTitle, onOpen) {
+    container.innerHTML = "";
+    if (!window.ZDeck) return;
+    slides.forEach(function (slide, i) {
+      container.appendChild(window.ZDeck.slideCard(slide, i, {
+        theme: theme,
+        total: slides.length,
+        deckTitle: deckTitle || "",
+        onClick: onOpen ? function () { onOpen(i); } : null
+      }));
+    });
   }
 
   function renderDeckList() {
@@ -77,16 +82,6 @@
       item.addEventListener("click", function () { openDeck(deck.id); });
       list.appendChild(item);
     });
-  }
-
-  function slideCard(slide, index) {
-    var card = el("article", "slide");
-    card.appendChild(el("span", "slide-num", String(index + 1)));
-    card.appendChild(el("h3", "slide-title", slide.title || ""));
-    var ul = el("ul", "slide-bullets");
-    (slide.bullets || []).forEach(function (b) { ul.appendChild(el("li", null, b)); });
-    card.appendChild(ul);
-    return card;
   }
 
   function renderCanvaStatus() {
@@ -169,25 +164,33 @@
   function openDeck(id) {
     api("/api/decks/" + id).then(function (data) {
       state.current = data.deck;
+      state.currentTheme = themeOf(data.deck.theme);
       $("empty").hidden = true;
       $("viewer").hidden = false;
       $("deckTitle").textContent = data.deck.title;
       var invites = (data.deck.invitees || []).length ? "Invited: " + data.deck.invitees.join(", ") + " · " : "";
       $("deckMeta").textContent = invites + data.deck.slides.length + " slides · created " + new Date(data.deck.createdAt).toLocaleString();
-      var slides = $("slides");
-      slides.innerHTML = "";
-      data.deck.slides.forEach(function (slide, i) { slides.appendChild(slideCard(slide, i)); });
-      applyTheme(slides, data.deck.theme);
+      renderSlidesInto($("slides"), data.deck.slides || [], state.currentTheme, data.deck.title, openPresent);
       renderCanvaBar(data.deck);
       renderDeckList();
+      updatePresentFrames();
     }).catch(function () { /* deck may have been removed */ });
   }
 
   function deckAsText(deck) {
     var lines = [deck.title, ""];
-    deck.slides.forEach(function (slide, i) {
-      lines.push("Slide " + (i + 1) + ": " + slide.title);
+    (deck.slides || []).forEach(function (slide, i) {
+      lines.push("Slide " + (i + 1) + ": " + (slide.title || ""));
+      if (slide.subtitle) lines.push("  " + slide.subtitle);
+      if (slide.quote) lines.push("  \u201C" + (slide.quote.text || slide.quote) + "\u201D" + (slide.quote.attribution ? " \u2014 " + slide.quote.attribution : ""));
       (slide.bullets || []).forEach(function (b) { lines.push("  - " + b); });
+      (slide.stats || []).forEach(function (s) { lines.push("  * " + (s.value || "") + " " + (s.label || "")); });
+      (slide.timeline || []).forEach(function (t) { lines.push("  ~ " + (t.when || "") + ": " + (t.what || "")); });
+      if (slide.compare) {
+        if (slide.compare.left) lines.push("  [A] " + (slide.compare.left.title || "") + ": " + (slide.compare.left.points || []).join("; "));
+        if (slide.compare.right) lines.push("  [B] " + (slide.compare.right.title || "") + ": " + (slide.compare.right.points || []).join("; "));
+      }
+      if (slide.image && slide.image.url) lines.push("  (image: " + (slide.image.credit || slide.image.query || slide.image.url) + ")");
       lines.push("");
     });
     return lines.join("\n");
@@ -201,9 +204,11 @@
     });
   });
 
+  /* -------------------------------------------------------------- create flow */
+
   var dialog = $("createDialog");
   var form = $("createForm");
-  var buildState = { slides: 0 };
+  var buildState = { slidesData: [], theme: null, deckTitle: "" };
 
   function openDialog() {
     $("formError").hidden = true;
@@ -238,15 +243,22 @@
   $("canvaGateClose").addEventListener("click", function () { dialog.close(); });
 
   function startBuildView() {
-    buildState.slides = 0;
+    buildState.slidesData = [];
+    buildState.theme = null;
+    buildState.deckTitle = "";
     $("canvaGate").hidden = true;
     $("createFields").hidden = true;
     $("buildView").hidden = false;
     $("buildTitle").textContent = "";
     $("buildStatus").textContent = "Starting\u2026";
     $("buildSlides").innerHTML = "";
-    applyTheme($("buildSlides"), null);
     $("buildClose").hidden = true;
+  }
+
+  function renderBuildSlides() {
+    renderSlidesInto($("buildSlides"), buildState.slidesData, buildState.theme, buildState.deckTitle, null);
+    var box = $("buildSlides");
+    box.scrollTop = box.scrollHeight;
   }
 
   function resetCreateView() {
@@ -262,13 +274,26 @@
 
   function handleBuildEvent(evt) {
     if (evt.type === "meta") {
-      if (evt.title) $("buildTitle").textContent = evt.title;
-      if (evt.theme) applyTheme($("buildSlides"), evt.theme);
+      var hadTheme = Boolean(buildState.theme);
+      if (evt.title) {
+        buildState.deckTitle = evt.title;
+        $("buildTitle").textContent = evt.title;
+      }
+      if (evt.theme) buildState.theme = themeOf(evt.theme);
+      if (buildState.theme && !hadTheme && buildState.slidesData.length) renderBuildSlides();
     } else if (evt.type === "slide") {
-      $("buildSlides").appendChild(slideCard(evt.slide, evt.index || buildState.slides));
-      buildState.slides += 1;
-      var box = $("buildSlides");
-      box.scrollTop = box.scrollHeight;
+      buildState.slidesData.push(evt.slide);
+      var index = typeof evt.index === "number" ? evt.index : buildState.slidesData.length - 1;
+      var frame = window.ZDeck ? window.ZDeck.slideCard(evt.slide, index, {
+        theme: buildState.theme,
+        total: 0,
+        deckTitle: buildState.deckTitle
+      }) : null;
+      if (frame) {
+        $("buildSlides").appendChild(frame);
+        var box = $("buildSlides");
+        box.scrollTop = box.scrollHeight;
+      }
     } else if (evt.type === "status") {
       $("buildStatus").textContent = evt.text || "";
     } else if (evt.type === "done") {
@@ -332,6 +357,133 @@
       buildError(err.message || "Generation failed. Try again.");
     });
   });
+
+  /* --------------------------------------------------------- presentation mode */
+
+  var presentState = { open: false, index: 0, frames: [], touchX: null };
+
+  function presentScale() {
+    var pad = 40;
+    var w = Math.max(320, window.innerWidth - pad * 2);
+    var h = Math.max(200, window.innerHeight - pad * 2 - 24);
+    return Math.min(w / 1280, h / 720);
+  }
+
+  function updatePresentFrames() {
+    if (!presentState.frames.length) return;
+    var s = presentScale();
+    var w = Math.max(1, Math.floor(1280 * s));
+    var h = Math.max(1, Math.floor(720 * s));
+    presentState.frames.forEach(function (frame) {
+      frame.style.width = w + "px";
+      frame.style.height = h + "px";
+      frame.style.setProperty("--scale", String(s));
+    });
+  }
+
+  function setPresentIndex(i) {
+    var total = presentState.frames.length;
+    if (!total) return;
+    presentState.index = Math.max(0, Math.min(total - 1, i));
+    presentState.frames.forEach(function (frame, idx) {
+      frame.classList.toggle("is-active", idx === presentState.index);
+    });
+    $("presentCount").textContent = (presentState.index + 1) + " / " + total;
+    $("presentBar").style.width = (((presentState.index + 1) / total) * 100) + "%";
+    $("presentPrev").disabled = presentState.index === 0;
+    $("presentNext").disabled = presentState.index === total - 1;
+    var dots = $("presentDots").children;
+    for (var d = 0; d < dots.length; d++) dots[d].classList.toggle("is-active", d === presentState.index);
+  }
+
+  function openPresent(index) {
+    if (!state.current || !state.current.slides || !state.current.slides.length || !window.ZDeck) return;
+    var overlay = $("present");
+    var stage = $("presentStage");
+    stage.innerHTML = "";
+    presentState.frames = [];
+    var theme = state.currentTheme || themeOf(state.current.theme);
+    var slides = state.current.slides;
+    slides.forEach(function (slide, i) {
+      var frame = window.ZDeck.slideCard(slide, i, { theme: theme, total: slides.length, deckTitle: state.current.title });
+      stage.appendChild(frame);
+      presentState.frames.push(frame);
+    });
+    $("presentDeck").textContent = state.current.title || "";
+    var dots = $("presentDots");
+    dots.innerHTML = "";
+    if (slides.length <= 14) {
+      slides.forEach(function (_, i) {
+        var dot = document.createElement("button");
+        dot.type = "button";
+        dot.className = "present-dot";
+        dot.setAttribute("aria-label", "Slide " + (i + 1));
+        dot.addEventListener("click", function () { setPresentIndex(i); });
+        dots.appendChild(dot);
+      });
+    }
+    overlay.hidden = false;
+    document.body.style.overflow = "hidden";
+    presentState.open = true;
+    updatePresentFrames();
+    setPresentIndex(typeof index === "number" ? index : 0);
+    if (overlay.requestFullscreen) overlay.requestFullscreen().catch(function () {});
+  }
+
+  function closePresent() {
+    var overlay = $("present");
+    overlay.hidden = true;
+    presentState.open = false;
+    document.body.style.overflow = "";
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+  }
+
+  $("presentBtn").addEventListener("click", function () { openPresent(0); });
+  $("presentClose").addEventListener("click", closePresent);
+  $("presentPrev").addEventListener("click", function () { setPresentIndex(presentState.index - 1); });
+  $("presentNext").addEventListener("click", function () { setPresentIndex(presentState.index + 1); });
+  $("printBtn").addEventListener("click", function () {
+    if (!state.current) return;
+    window.print();
+  });
+
+  $("presentStage").addEventListener("click", function (event) {
+    if (!presentState.open) return;
+    var rect = this.getBoundingClientRect();
+    var mid = rect.left + rect.width / 2;
+    if (event.clientX >= mid) setPresentIndex(presentState.index + 1);
+    else setPresentIndex(presentState.index - 1);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (!presentState.open) return;
+    var key = event.key;
+    if (key === "Escape") { event.preventDefault(); closePresent(); }
+    else if (key === "ArrowRight" || key === "PageDown" || key === " " || key === "Enter") { event.preventDefault(); setPresentIndex(presentState.index + 1); }
+    else if (key === "ArrowLeft" || key === "PageUp") { event.preventDefault(); setPresentIndex(presentState.index - 1); }
+    else if (key === "Home") { event.preventDefault(); setPresentIndex(0); }
+    else if (key === "End") { event.preventDefault(); setPresentIndex(presentState.frames.length - 1); }
+  });
+
+  $("present").addEventListener("touchstart", function (event) {
+    presentState.touchX = event.changedTouches[0] ? event.changedTouches[0].clientX : null;
+  }, { passive: true });
+  $("present").addEventListener("touchend", function (event) {
+    if (presentState.touchX === null || !event.changedTouches[0]) return;
+    var dx = event.changedTouches[0].clientX - presentState.touchX;
+    if (Math.abs(dx) > 48) setPresentIndex(presentState.index + (dx < 0 ? 1 : -1));
+    presentState.touchX = null;
+  }, { passive: true });
+
+  window.addEventListener("resize", function () {
+    if (presentState.open) updatePresentFrames();
+  });
+
+  document.addEventListener("fullscreenchange", function () {
+    if (!document.fullscreenElement && presentState.open) closePresent();
+  });
+
+  /* ----------------------------------------------------------------- refresh */
 
   function refresh() {
     return Promise.all([api("/api/me"), api("/api/decks"), api("/api/canva/status")]).then(function (results) {

@@ -127,38 +127,11 @@ body {
 .viewer-head h2 { margin: 0 0 6px; font-size: 1.7rem; }
 .viewer-meta { margin: 0; color: var(--muted); font-size: .9rem; }
 
-.slides { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
-
-.slide {
-  position: relative;
-  background: var(--slide-bg, var(--panel));
-  border: 1px solid var(--slide-accent, var(--line));
-  border-radius: var(--radius);
-  padding: 26px 26px 22px;
-  aspect-ratio: 16 / 10;
-  overflow: hidden;
-  display: flex; flex-direction: column;
-}
-.slide::before {
-  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
-  background: linear-gradient(180deg, var(--slide-accent, var(--accent)), transparent);
-}
-.slide-num {
-  position: absolute; top: 14px; right: 18px;
-  color: var(--slide-accent, var(--muted)); font-size: .78rem; font-weight: 700; letter-spacing: .08em;
-}
-.slide-title { margin: 6px 0 14px; font-size: 1.25rem; letter-spacing: -.01em; color: var(--slide-text, var(--text)); }
-.slide-bullets { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
-.slide-bullets li { color: var(--slide-muted, oklch(0.88 0.008 180)); line-height: 1.45; font-size: .95rem; }
+.slides { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 22px; }
 
 .build-title { margin: 0 0 4px; font-size: 1.15rem; }
 .build-status { margin: 0 0 12px; color: var(--muted); font-size: .9rem; }
-.build-slides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 52vh; overflow-y: auto; }
-.build-slides .slide { aspect-ratio: 16 / 10; padding: 14px 16px; border-radius: 10px; }
-.build-slides .slide-title { font-size: .92rem; margin: 2px 0 8px; }
-.build-slides .slide-bullets { padding-left: 14px; gap: 4px; }
-.build-slides .slide-bullets li { font-size: .72rem; line-height: 1.35; }
-.build-slides .slide-num { top: 8px; right: 10px; font-size: .62rem; }
+.build-slides { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
 
 /* dialog */
 .dialog {
