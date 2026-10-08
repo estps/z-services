@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { normalizeDeck, normalizeSlide } from "./deckgen.mjs";
+import { normalizeDeck, normalizeSlide, themeColors } from "./deckgen.mjs";
 
 const W = 13.333;
 const H = 7.5;
@@ -41,14 +41,7 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
     Math.max(1, (deck.slides || []).length || 20)
   );
   const theme = normalized.theme;
-  const c = {
-    bg: theme.bg,
-    accent: theme.accent,
-    text: theme.text,
-    muted: theme.muted,
-    accent2: theme.accent2,
-    surface: theme.surface,
-  };
+  const c = themeColors(theme);
   const pptx = new PptxGenJS();
   pptx.defineLayout({ name: "Z16x9", width: W, height: H });
   pptx.layout = "Z16x9";

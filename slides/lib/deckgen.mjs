@@ -64,6 +64,11 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+function saturation(color) {
+  const [r, g, b] = toRgb(color);
+  return (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+}
+
 function mix(a, b, ratio) {
   const ac = toRgb(a);
   const bc = toRgb(b);
@@ -71,31 +76,85 @@ function mix(a, b, ratio) {
   return out.map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
+function bestInk(bg, palette) {
+  let best = null;
+  let bestContrast = 0;
+  for (const color of palette) {
+    const value = contrast(bg, color);
+    if (value > bestContrast) {
+      bestContrast = value;
+      best = color;
+    }
+  }
+  if (best && bestContrast >= 4.5) return best;
+  return luminance(bg) > 0.55 ? "111111" : "FFFFFF";
+}
+
+function firstAccent(bg, palette, ink) {
+  let best = null;
+  let bestScore = -1;
+  for (const color of palette) {
+    if (color === bg || color === ink) continue;
+    const value = contrast(bg, color);
+    if (value < 1.5) continue;
+    const score = saturation(color) * 2 + Math.min(value, 6) * 0.3;
+    if (score > bestScore) {
+      bestScore = score;
+      best = color;
+    }
+  }
+  return best;
+}
+
+/* The emitted theme is EXACTLY the contract shape:
+   { name, palette: [bg, accent, text, muted, accent2, surface], mood }.
+   The front-end derives its own ink/accent from the palette; the PPTX
+   renderer calls themeColors() below for concrete roles. */
 export function normalizeTheme(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
-  const palette = Array.isArray(source.palette) ? source.palette.map((c) => hex(c, "")) : [];
-  const bg = palette[0] || hex(source.bg, FALLBACK.bg);
-  const accent = palette[1] || hex(source.accent, FALLBACK.accent);
-  let text = palette[2] || hex(source.text, FALLBACK.text);
-  const muted = palette[3] || hex(source.muted, FALLBACK.muted);
-  const accent2 = palette[4] || hex(source.accent2, mix(accent, text, 0.35));
-  const surface = palette[5] || hex(source.surface, mix(bg, text, 0.1));
-  /* Readability guard: flip text if it does not clear 4.5:1 on the bg. */
-  if (contrast(bg, text) < 4.5) text = luminance(bg) > 0.4 ? "111111" : "FFFFFF";
-  const safeAccent = contrast(bg, accent) >= 1.8 ? accent : "D4A72C";
+  const sourcePalette = Array.isArray(source.palette) ? source.palette : [];
+  const fromPalette = (i) => hex(sourcePalette[i], "");
+  const bg = fromPalette(0) || hex(source.bg, FALLBACK.bg);
+  const accent = fromPalette(1) || hex(source.accent, FALLBACK.accent);
+  const text = fromPalette(2) || hex(source.text, FALLBACK.text);
+  const muted = fromPalette(3) || hex(source.muted, FALLBACK.muted);
+  const accent2 = fromPalette(4) || hex(source.accent2, mix(accent, text, 0.35));
+  const surface = fromPalette(5) || hex(source.surface, mix(bg, text, 0.1));
+  const palette = [bg, accent, text, muted, accent2, surface];
+  /* Readability guards: make sure at least one palette color reads on bg and
+     that the accent is visible; otherwise the site/pptx fall back to noise. */
+  const ink = bestInk(bg, palette);
+  const safeInk = ink === text ? text : ink;
+  const safeAccent = contrast(bg, accent) >= 1.5 ? accent : firstAccent(bg, palette, safeInk) || FALLBACK.accent;
   const name = String(source.name || "").replace(/\s+/g, " ").trim().slice(0, 48) || "Custom";
   const mood = String(source.mood || "").replace(/\s+/g, " ").trim().slice(0, 80) || "designed for the topic";
+  return { name, palette: [bg, safeAccent, safeInk, muted, accent2, surface], mood };
+}
+
+/* Concrete roles for server-side rendering (PPTX). */
+export function themeColors(raw) {
+  const theme = normalizeTheme(raw);
+  const palette = theme.palette.slice();
+  const bg = palette[0];
+  const ink = bestInk(bg, palette);
+  const accents = palette
+    .filter((color) => color !== bg && color !== ink && contrast(bg, color) >= 1.2)
+    .sort((a, b) => saturation(b) * 2 + contrast(bg, b) * 0.3 - (saturation(a) * 2 + contrast(bg, a) * 0.3));
+  const accent = accents[0] || FALLBACK.accent;
+  let accent2 = accents[1] || mix(accent, ink, 0.4);
+  if (accent2 === accent) accent2 = mix(accent, ink, 0.4);
+  const dark = luminance(bg) < 0.45;
   return {
-    name,
-    palette: [bg, safeAccent, text, muted, accent2, surface],
-    mood,
-    /* mirror for legacy consumers */
     bg,
-    accent: safeAccent,
-    text,
-    muted,
+    accent,
     accent2,
-    surface,
+    text: ink,
+    muted: mix(ink, bg, 0.4),
+    surface: dark ? mix(bg, "FFFFFF", 0.07) : mix(bg, "000000", 0.05),
+    dark,
+    name: theme.name,
+    mood: theme.mood,
+    palette,
   };
 }
 
