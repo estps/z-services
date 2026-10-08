@@ -900,22 +900,8 @@ function parseGenerated(raw, maxPages = MAX_PAGES) {
       }
     }
   }
-  if (!parsed || !Array.isArray(parsed.slides) || !parsed.slides.length) {
-    throw new Error("AI returned an unexpected format; please try again");
-  }
-  const slides = parsed.slides
-    .slice(0, maxPages)
-    .map((slide) => ({
-      title: String(slide.title || "").slice(0, 120) || "Untitled slide",
-      bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6).map((b) => String(b).slice(0, 220)),
-    }))
-    .filter((slide) => slide.title || slide.bullets.length);
-  if (!slides.length) throw new Error("AI returned an empty deck; please try again");
-  return {
-    title: String(parsed.title || "Untitled presentation").slice(0, 140),
-    theme: normalizeTheme(parsed.theme),
-    slides,
-  };
+  if (!parsed) throw new Error("AI returned an unexpected format; please try again");
+  return normalizeDeck(parsed, maxPages);
 }
 
 function mergeUsage(a, b) {
@@ -930,6 +916,7 @@ async function completeMissingSlides(prep, targetPages, existing, onSlide) {
   const missing = targetPages - existing.length;
   if (missing <= 0) return { list: [], usage: null };
   const titles = existing.map((slide) => slide.title).filter(Boolean).join(" | ");
+  const layoutsUsed = existing.map((slide) => slide.layout).join(", ");
   const response = await fetch(DEEPSEEK_URL, {
     method: "POST",
     headers: {
@@ -943,15 +930,19 @@ async function completeMissingSlides(prep, targetPages, existing, onSlide) {
         {
           role: "user",
           content:
-            `${buildPrompt(prep.details, targetPages, prep.invitees)}\n\n` +
+            `${prep.prompt || buildPrompt(prep)}\n\n` +
             `You already wrote these slides (titles): ${titles}.\n` +
-            `Output ONLY {"slides": [ ... ]} containing EXACTLY ${missing} additional, distinct slides that continue the deck. ` +
-            `Do not repeat the existing slides. Same shape as before: {"title": "...", "bullets": ["..."]}.`,
+            `Layouts already used in order: ${layoutsUsed}.\n` +
+            `Output ONLY {"slides": [ ... ]} containing EXACTLY ${missing} additional, distinct slides that continue the deck ` +
+            `(one of them must be the "closing" slide if the deck does not have one yet). ` +
+            `Do not repeat existing slides and do not reuse the exact same layout sequence. ` +
+            `Same contract as before, e.g. {"layout":"bullets","title":"...","bullets":["..."],"notes":"..."} ` +
+            `or {"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}.`,
         },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 3000,
-      temperature: 0.7,
+      max_tokens: Math.min(MAX_OUTPUT_TOKENS, 3500),
+      temperature: 0.8,
     }),
   });
   if (!response.ok) {
@@ -974,10 +965,7 @@ async function completeMissingSlides(prep, targetPages, existing, onSlide) {
     }
   }
   const list = (parsed && Array.isArray(parsed.slides) ? parsed.slides : [])
-    .map((slide) => ({
-      title: String(slide.title || "").slice(0, 120) || "Untitled slide",
-      bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6).map((b) => String(b).slice(0, 220)),
-    }))
+    .map((slide) => normalizeSlide(slide))
     .filter((slide) => slide.title || slide.bullets.length)
     .slice(0, missing);
   for (let i = 0; i < list.length; i += 1) {
