@@ -978,10 +978,41 @@
 
   /* ------------------------------------------------------------------ public */
 
+  function renderHtmlCanvas(slide, index, ctx, theme) {
+    var cv = tag("article", "dc dc--html");
+    var vars = themeVars(theme);
+    Object.keys(vars).forEach(function (k) { cv.style.setProperty(k, vars[k]); });
+    var frame = document.createElement("iframe");
+    frame.className = "dc-html-frame";
+    frame.setAttribute("sandbox", "allow-same-origin");
+    frame.setAttribute("scrolling", "no");
+    frame.setAttribute("title", "Slide " + (index + 1));
+    frame.srcdoc =
+      "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;padding:0;width:1280px;height:720px;overflow:hidden;background:#" + theme.bg + "}</style></head><body>" +
+      slide.html +
+      "</body></html>";
+    frame.addEventListener("load", function () {
+      var doc;
+      try { doc = frame.contentDocument; } catch (e) { return; }
+      if (!doc || !doc.body) return;
+      if (ctx.editable) {
+        doc.body.setAttribute("contenteditable", "true");
+        doc.body.style.outline = "none";
+        doc.body.addEventListener("input", function () {
+          if (typeof ctx.onEdit === "function") ctx.onEdit(index, doc.body.innerHTML);
+        });
+      }
+      observeFrame(frame);
+    });
+    cv.appendChild(frame);
+    return cv;
+  }
+
   function renderSlideCanvas(rawSlide, index, ctx) {
     ctx = ctx || {};
     var theme = normalizeTheme(ctx.theme || {});
     var slide = normalizeSlide(rawSlide);
+    if (slide.html) return renderHtmlCanvas(slide, index, ctx, theme);
     var total = ctx.total || 0;
     var layout = resolveLayout(slide, index, total);
     var seed = theme.seed;

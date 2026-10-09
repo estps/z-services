@@ -181,6 +181,22 @@ const s = (value, max) => String(value == null ? "" : value).replace(/\s+/g, " "
 const list = (value, maxItems, maxLen) =>
   (Array.isArray(value) ? value : []).map((entry) => s(entry, maxLen)).filter(Boolean).slice(0, maxItems);
 
+/* Free-form HTML slides: strip anything executable. Slides are rendered in a
+   sandboxed iframe and exported as rasterised images, so scripts must never
+   survive. */
+export function sanitizeSlideHtml(value) {
+  let html = String(value == null ? "" : value).trim();
+  if (!html) return "";
+  html = html.replace(/<script[\s\S]*?<\/script>/gi, "");
+  html = html.replace(/<style[\s\S]*?<\/style>/gi, "");
+  html = html.replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
+  html = html.replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, "");
+  html = html.replace(/\son[a-z]+\s*=\s*'[^']*'/gi, "");
+  html = html.replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "");
+  html = html.replace(/javascript:/gi, "");
+  return html.slice(0, 40000);
+}
+
 function normalizeBlocks(raw) {
   const blocks = (Array.isArray(raw) ? raw : []).map((entry) => {
     const src = entry && typeof entry === "object" ? entry : {};
@@ -236,6 +252,13 @@ function inferLayout(raw) {
 
 export function normalizeSlide(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
+  const html = sanitizeSlideHtml(source.html || source.body_html || source.bodyHtml);
+  if (html) {
+    const slide = { layout: "html", title: s(source.title, 140) || "", html };
+    const notes = s(source.notes, 800);
+    if (notes) slide.notes = notes;
+    return slide;
+  }
   let layout = s(source.layout || source.type || source.kind, 20).toLowerCase();
   if (!LAYOUTS.includes(layout)) layout = inferLayout(source);
   const blocks = normalizeBlocks(source.blocks);
@@ -474,7 +497,6 @@ export function ensureUniqueSequence(slides, recent) {
 
 export function buildPrompt({ details, pages, invitees, research, avoidSequences, detail } = {}) {
   const target = Math.max(1, Number(pages) || 12);
-  const seed = STYLE_SEEDS[crypto.randomInt(STYLE_SEEDS.length)];
   const family = THEME_FAMILIES[crypto.randomInt(THEME_FAMILIES.length)];
   const detailLevel = Math.max(1, Math.min(5, Math.round(Number(detail) || 3)));
   const detailGuide = [
@@ -495,32 +517,21 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
         .map((entry) => `- ${entry.seq}`)
         .join("\n")}`
     : "";
-  const structure =
-    target >= 6
-      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; include at least 2 "section" dividers; use at least 6 DISTINCT layouts overall; spread content across compose, hero, band, sidebar, panels, bigNumber, stats, timeline, comparison, quote, image, split - use NO single layout more than twice; give every compose slide a DIFFERENT block arrangement; never repeat the same layout back to back. VISUAL VARIETY MATTERS MORE THAN ANYTHING: avoid a deck where every slide is a small kicker + left-aligned headline + a row of blocks. Vary where the title sits (centered in "hero", inside a coloured left panel in "sidebar", in a wide band in "band", as the focus of "bigNumber").`
-      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; use at least 3 distinct layouts; avoid two adjacent slides with the same layout.`;
   return [
-    "You are a senior presentation designer. Create a visually varied, premium slide deck.",
-    `Return STRICT JSON only, no markdown, no code fences, exactly this shape:`,
-    `{"title":"Deck title","subtitle":"One-line deck subtitle","theme":{"name":"Short theme name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"layout":"cover","title":"...","subtitle":"...","notes":"speaker note"},{"layout":"compose","title":"...","blocks":[{"type":"kicker","text":"..."},{"type":"title","text":"...","size":"l"},{"type":"text","text":"...","span":2},{"type":"stat","value":"42%","label":"...","span":1}],"notes":"..."},{"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}]}`,
-    `Allowed layout values ONLY: ${LAYOUTS.join(", ")}.`,
-    `slides MUST contain EXACTLY ${target} slide objects - count them, fill every one, no placeholders.`,
-    `Every slide - including section dividers - must have a specific, descriptive title; never output an empty or "Untitled" title.`,
-    structure,
-    `REQUIRED layouts when the deck has 5+ slides: you MUST include at least one slide with layout "hero", one "band", one "sidebar", one "panels" and one "bigNumber". Do not use "bullets" or "compose" more than twice each.`,
-    `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split. hero/band/sidebar/bigNumber use title + optional subtitle + bullets[] and stats[]; panels uses title + compare (or bullets that split into two columns).`,
-    `What each layout looks like: cover=title slide; section=chapter divider; bullets=list; split=text beside a photo; image=full-bleed photo; quote=pull-quote; stats=row of stat cards; timeline=dated milestones; comparison=two named sides; compose=built from blocks; hero=centered giant statement; band=accent-barred headline with content; sidebar=coloured left panel holding the title, details on the right; panels=two big contrasting panels; bigNumber=one huge centered figure.`,
-    `Compose blocks (layout "compose"): blocks is an ORDERED array; types: kicker{text}, title{text,size:s|m|l|xl}, text{text,size}, list{items[],numbered?,columns?:1|2}, stat{value,label}, stats{items[{value,label}]}, quote{text,attribution}, callout{text}, chips{items[]}, divider{}, spacer{}. Every block may set span (1-3 columns of a 3-column grid) and align (left|center|right). Put 4-9 blocks per slide, vary the spans (e.g. a span:2 text next to a span:1 stat) and never reuse the same arrangement on another slide.`,
-    `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
-    `Theme: derive from the topic's mood, make it distinctive, palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT "#"; background must be dark or light enough that "text" is clearly readable; "accent" must pop on the background.`,
-    `Palette family to start from (adapt its hues to the topic instead of copying it blindly; stay in this family's temperature and contrast): ${family}.`,
+    "You are an elite presentation DESIGNER. Build a complete slide deck where EVERY slide is an individually art-directed design, and output ONLY strict JSON (no markdown, no commentary, no code fences).",
+    `Shape: {"title":"Deck title","subtitle":"One line","theme":{"name":"Short name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"html":"<section style=\\"...\\">...</section>","notes":"speaker note"},{"html":"<section style=\\"...\\">...</section>","notes":"..."}]}`,
+    `slides MUST contain EXACTLY ${target} objects, each with an "html" string and a short "notes" string.`,
+    `Each "html" is a COMPLETE, self-contained slide: a single top-level element sized to EXACTLY 1280x720 (set width:1280px;height:720px;overflow:hidden) written with INLINE style attributes only. Do NOT use <style> blocks, <script>, external fonts, external stylesheets or external images. Use system fonts only (Georgia, 'Times New Roman', Arial, Helvetica, system-ui).`,
+    `YOU design the entire slide: grid or absolute positioning, type scale, spacing, colour blocks, shapes (CSS borders, backgrounds, gradients), rules, big number callouts, sidebars, split panels. Do NOT put a repeated header or footer bar on every slide.`,
+    `Each slide MUST use a clearly DIFFERENT composition from the others - different title placement (centered / left / oversized / inside a colour panel), different background treatment and different content arrangement. Never repeat the same skeleton twice in a deck.`,
+    `Keep all content inside the 1280x720 box (no overflow). Text must be readable on its background.`,
+    `Theme: palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT '#'. Adapt the hues to the topic; make it distinctive.`,
+    `Palette starting family (adapt it, do not copy blindly): ${family}.`,
+    `Content detail level (${detailLevel}/5): ${detailGuide}`,
     `Content: specific and factual, no filler; lean on the brief.`,
-    `Creative direction for THIS deck (apply consistently): ${seed}.`,
-    `Make the layout rhythm feel designed for this specific deck - not a generic template.`,
-    avoid,
     audience,
     facts,
-    `Content detail level (${detailLevel}/5): ${detailGuide}`,
+    avoid,
     `Brief: ${details}`,
   ]
     .filter(Boolean)
