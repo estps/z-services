@@ -31,6 +31,9 @@ const config: CapacitorConfig = {
     // Inline or full-screen video is required so call streams play in the WebView.
     limitsNavigationsToAppBoundDomains: false,
   },
+  android: {
+    allowMixedContent: false,
+  },
 };
 
 export default config;
