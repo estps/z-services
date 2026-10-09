@@ -1,8 +1,15 @@
 name: Android APK (Capacitor)
 
-# Builds the Capacitor Android shell in mobile/ into an installable debug APK on
-# a Linux runner (Android debug APKs can be sideloaded without signing secrets).
-# Add a keystore to produce a signed release APK for the Play Store.
+# Builds the Capacitor Android shell in mobile/.
+# - With keystore secrets: builds a SIGNED release APK + AAB (installable +
+#   uploadable to the Play Store).
+# - Without secrets: builds an unsigned debug APK (sideloadable).
+#
+# Signed-build secrets:
+#   ANDROID_KEYSTORE_BASE64     (release .jks, base64)
+#   ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
 
 on:
   workflow_dispatch:
@@ -18,7 +25,7 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: mobile
@@ -74,16 +81,87 @@ jobs:
           print("permissions now:", [p for p in perms if p in xml])
           PY
 
+      - name: Detect signing secrets
+        id: signing
+        working-directory: .
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] \
+             && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Keystore secrets found: building a SIGNED release APK + AAB."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No keystore secrets - building an unsigned debug APK."
+          fi
+
+      - name: Decode keystore + write signing config
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/zchat-release.jks"
+          cat > android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/zchat-release.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          python3 - <<'PY'
+          p = "android/app/build.gradle"
+          s = open(p, encoding="utf-8").read()
+          loader = ('def keystoreProperties = new Properties()\n'
+                    'def keystorePropertiesFile = rootProject.file("keystore.properties")\n'
+                    'if (keystorePropertiesFile.exists()) { keystoreProperties.load(new FileInputStream(keystorePropertiesFile)) }\n\n')
+          if "keystoreProperties" not in s:
+              s = loader + s
+          if "signingConfig signingConfigs.release" not in s:
+              s = s.replace("        release {\n            minifyEnabled",
+                            "        release {\n            signingConfig signingConfigs.release\n            minifyEnabled", 1)
+          if "signingConfigs {" not in s:
+              s = s.replace("    buildTypes {",
+                            "    signingConfigs {\n        release {\n            keyAlias keystoreProperties['keyAlias']\n            keyPassword keystoreProperties['keyPassword']\n            storeFile file(keystoreProperties['storeFile'])\n            storePassword keystoreProperties['storePassword']\n        }\n    }\n    buildTypes {", 1)
+          open(p, "w", encoding="utf-8").write(s)
+          print("patched build.gradle")
+          PY
+
       - name: Sync web assets and native dependencies
         run: npx cap sync android
 
+      - name: Build signed release APK + AAB
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace
+
       - name: Build debug APK
+        if: steps.signing.outputs.signed != 'true'
         working-directory: mobile/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK artifact
+      - name: Upload signed APK + AAB
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZChat-android-signed
+          path: |
+            mobile/android/app/build/outputs/apk/release/*.apk
+            mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload debug APK
+        if: steps.signing.outputs.signed != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ZChat-android-apk
