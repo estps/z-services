@@ -966,3 +966,47 @@
 .dc-blk-statcard { background: var(--d-surface); border-radius: var(--d-radius); padding: 16px 18px; }
 .dc-blk-statcard .dc-blk-stat-value { font-size: 40px; }
 .dc-blk-spacer { height: 8px; }
+
+/* ------------------------------------------------------- alternative layouts */
+.dc--hero .dc-body { justify-content: center; align-items: center; text-align: center; gap: 18px; }
+.dc-hero-title { font-family: var(--d-display); font-size: 94px; line-height: 1.02; color: var(--d-ink); margin: 0; font-weight: bold; }
+.dc--hero .dc-kicker { justify-content: center; }
+.dc--hero .dc-chips { justify-content: center; }
+
+.dc--band .dc-body { justify-content: flex-start; padding-top: 70px; }
+.dc-band-head { border-left: 8px solid var(--d-accent); padding-left: 26px; margin-bottom: 32px; max-width: 76%; }
+.dc-band-title { font-family: var(--d-display); font-size: 54px; line-height: 1.04; color: var(--d-ink); margin: 10px 0 0; }
+.dc-band-content { display: grid; grid-template-columns: 1.4fr 1fr; gap: 42px; align-items: start; width: 100%; }
+.dc-band-list { list-style: none; margin: 0; padding: 0; }
+.dc-band-list li { position: relative; padding-left: 26px; margin-bottom: 14px; font-family: var(--d-body); font-size: 21px; line-height: 1.4; color: var(--d-muted); }
+.dc-band-list li::before { content: ""; position: absolute; left: 0; top: 0.6em; width: 12px; height: 2px; background: var(--d-accent); }
+.dc-band-stats { display: flex; flex-direction: column; gap: 16px; }
+.dc-band-stat { background: var(--d-surface); border-radius: var(--d-radius); padding: 16px 20px; }
+.dc-band-stat-v { font-family: var(--d-display); font-size: 40px; color: var(--d-accent); line-height: 1; }
+.dc-band-stat-l { font-family: var(--d-body); font-size: 14px; color: var(--d-muted); margin-top: 6px; }
+
+.dc--sidebar .dc-body { flex-direction: row; align-items: stretch; padding: 0; gap: 0; }
+.dc-side-panel { width: 34%; background: var(--d-surface); padding: 72px 46px; display: flex; flex-direction: column; justify-content: center; gap: 16px; }
+.dc-side-title { font-family: var(--d-display); font-size: 46px; line-height: 1.05; color: var(--d-ink); margin: 0; }
+.dc-side-main { flex: 1; padding: 72px 54px; display: flex; flex-direction: column; justify-content: center; gap: 28px; }
+.dc-side-list { list-style: none; margin: 0; padding: 0; }
+.dc-side-list li { position: relative; padding-left: 32px; margin-bottom: 16px; font-family: var(--d-body); font-size: 21px; line-height: 1.4; color: var(--d-muted); }
+.dc-side-list li::before { content: ""; position: absolute; left: 0; top: 0.5em; width: 14px; height: 14px; border-radius: 50%; border: 3px solid var(--d-accent); }
+.dc-side-stats { display: flex; gap: 24px; }
+.dc-side-stat-v { font-family: var(--d-display); font-size: 48px; color: var(--d-accent); line-height: 1; }
+.dc-side-stat-l { font-family: var(--d-body); font-size: 14px; color: var(--d-muted); margin-top: 6px; }
+
+.dc--panels .dc-body { justify-content: center; gap: 28px; }
+.dc-panels-title { font-family: var(--d-display); font-size: 46px; color: var(--d-ink); margin: 0; text-align: center; }
+.dc-panels-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; width: 100%; }
+.dc-panel { background: var(--d-surface); border-radius: var(--d-radius-lg); padding: 32px 34px; border-top: 6px solid var(--d-accent); }
+.dc-panel--alt { border-top-color: var(--d-accent-2); }
+.dc-panel-title { font-family: var(--d-display); font-size: 27px; color: var(--d-ink); margin-bottom: 14px; }
+.dc-panel-list { list-style: none; margin: 0; padding: 0; }
+.dc-panel-list li { padding-left: 24px; position: relative; margin-bottom: 12px; font-family: var(--d-body); font-size: 18px; line-height: 1.4; color: var(--d-muted); }
+.dc-panel-list li::before { content: ""; position: absolute; left: 0; top: 0.55em; width: 8px; height: 8px; background: var(--d-accent-2); }
+
+.dc--bigNumber .dc-body { justify-content: center; align-items: center; text-align: center; gap: 14px; }
+.dc-bignum-value { font-family: var(--d-display); font-weight: bold; font-size: 220px; line-height: 0.9; color: var(--d-accent); }
+.dc-bignum-label { font-family: var(--d-body); font-size: 30px; color: var(--d-muted); max-width: 72%; }
+.dc--bigNumber .dc-chips { justify-content: center; }

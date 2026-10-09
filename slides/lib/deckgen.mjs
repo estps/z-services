@@ -24,7 +24,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const LAYOUTS = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "closing"];
+export const LAYOUTS = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "hero", "band", "sidebar", "panels", "bigNumber", "closing"];
 
 /* Block vocabulary for the "compose" layout: the model builds each slide from
    an ordered list of blocks laid out on a 3-column grid, so no two slides have
@@ -275,6 +275,17 @@ export function normalizeSlide(raw) {
     case "compose":
     case "closing":
       break;
+    case "hero":
+    case "band":
+    case "sidebar":
+    case "bigNumber":
+      slide.bullets = bullets;
+      slide.stats = stats;
+      break;
+    case "panels":
+      slide.bullets = bullets;
+      slide.compare = compare;
+      break;
     case "split":
       slide.bullets = bullets;
       if (image) slide.image = image;
@@ -324,12 +335,46 @@ export function normalizeDeck(parsed, maxPages = 20) {
     .slice(0, Math.max(1, Math.min(Number(maxPages) || 20, 40)));
   if (!slides.length) throw new Error("AI returned an empty deck; please try again");
   repairAdjacent(slides);
+  diversifyLayouts(slides);
   return {
     title: s(source.title, 140) || "Untitled presentation",
     subtitle: s(source.subtitle, 200),
     theme: normalizeTheme(source.theme),
     slides,
   };
+}
+
+/* The model loves to fall back to the same few layouts, which makes every deck
+   look alike. Guarantee that visually distinct structures appear by converting
+   a few content slides, choosing only conversions the slide's data supports. */
+function pickDistinct(slide, want) {
+  const bullets = slide.bullets && slide.bullets.length;
+  const stats = slide.stats && slide.stats.length;
+  if (want === "panels") return slide.compare || (bullets && slide.bullets.length >= 2) ? "panels" : null;
+  if (want === "bigNumber") return stats && slide.stats.length <= 2 ? "bigNumber" : null;
+  if (want === "band") return bullets ? "band" : null;
+  if (want === "sidebar") return bullets ? "sidebar" : null;
+  if (want === "hero") return bullets ? "hero" : null;
+  return null;
+}
+
+export function diversifyLayouts(slides) {
+  if (!Array.isArray(slides) || slides.length < 5) return slides;
+  const candidates = ["bullets", "stats"];
+  for (const want of ["hero", "panels", "band", "sidebar", "bigNumber"]) {
+    if (slides.some((s) => s.layout === want)) continue;
+    for (let i = 1; i < slides.length - 1; i += 1) {
+      const slide = slides[i];
+      if (!candidates.includes(slide.layout)) continue;
+      const chosen = pickDistinct(slide, want);
+      if (!chosen) continue;
+      if (slides[i - 1] && slides[i - 1].layout === chosen) continue;
+      if (slides[i + 1] && slides[i + 1].layout === chosen) continue;
+      slides[i] = { ...slide, layout: chosen };
+      break;
+    }
+  }
+  return slides;
 }
 
 /* Upgrade a deck stored before the layout schema existed (or any stored deck)
@@ -452,8 +497,8 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     : "";
   const structure =
     target >= 6
-      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; use at least 2 "section" dividers; use at least 4 DISTINCT layouts overall; prefer "compose" for most content slides (aim for at least half) and use [quote, stats, timeline, comparison, image, split] for the rest; give every compose slide a DIFFERENT block arrangement; never repeat the same layout 3 times in a row; avoid two adjacent slides with the same layout.`
-      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; prefer "compose" for content slides; use at least 2 distinct layouts; avoid two adjacent slides with the same layout.`;
+      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; include at least 2 "section" dividers; use at least 6 DISTINCT layouts overall; spread content across compose, hero, band, sidebar, panels, bigNumber, stats, timeline, comparison, quote, image, split - use NO single layout more than twice; give every compose slide a DIFFERENT block arrangement; never repeat the same layout back to back. VISUAL VARIETY MATTERS MORE THAN ANYTHING: avoid a deck where every slide is a small kicker + left-aligned headline + a row of blocks. Vary where the title sits (centered in "hero", inside a coloured left panel in "sidebar", in a wide band in "band", as the focus of "bigNumber").`
+      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; use at least 3 distinct layouts; avoid two adjacent slides with the same layout.`;
   return [
     "You are a senior presentation designer. Create a visually varied, premium slide deck.",
     `Return STRICT JSON only, no markdown, no code fences, exactly this shape:`,
@@ -462,7 +507,9 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     `slides MUST contain EXACTLY ${target} slide objects - count them, fill every one, no placeholders.`,
     `Every slide - including section dividers - must have a specific, descriptive title; never output an empty or "Untitled" title.`,
     structure,
-    `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split.`,
+    `REQUIRED layouts when the deck has 5+ slides: you MUST include at least one slide with layout "hero", one "band", one "sidebar", one "panels" and one "bigNumber". Do not use "bullets" or "compose" more than twice each.`,
+    `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split. hero/band/sidebar/bigNumber use title + optional subtitle + bullets[] and stats[]; panels uses title + compare (or bullets that split into two columns).`,
+    `What each layout looks like: cover=title slide; section=chapter divider; bullets=list; split=text beside a photo; image=full-bleed photo; quote=pull-quote; stats=row of stat cards; timeline=dated milestones; comparison=two named sides; compose=built from blocks; hero=centered giant statement; band=accent-barred headline with content; sidebar=coloured left panel holding the title, details on the right; panels=two big contrasting panels; bigNumber=one huge centered figure.`,
     `Compose blocks (layout "compose"): blocks is an ORDERED array; types: kicker{text}, title{text,size:s|m|l|xl}, text{text,size}, list{items[],numbered?,columns?:1|2}, stat{value,label}, stats{items[{value,label}]}, quote{text,attribution}, callout{text}, chips{items[]}, divider{}, spacer{}. Every block may set span (1-3 columns of a 3-column grid) and align (left|center|right). Put 4-9 blocks per slide, vary the spans (e.g. a span:2 text next to a span:1 stat) and never reuse the same arrangement on another slide.`,
     `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
     `Theme: derive from the topic's mood, make it distinctive, palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT "#"; background must be dark or light enough that "text" is clearly readable; "accent" must pop on the background.`,

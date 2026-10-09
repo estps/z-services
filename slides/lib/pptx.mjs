@@ -377,6 +377,85 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
     notes(s, slide);
   };
 
+  const renderHero = (slide, index) => {
+    const s = blank();
+    if (slide.subtitle) {
+      s.addText(String(slide.subtitle).toUpperCase(), { x: 0.8, y: 2.0, w: 11.7, h: 0.4, align: "center", fontFace: SANS, fontSize: 12, bold: true, color: c.accent, charSpacing: 3 });
+    }
+    s.addText(String(slide.title || ""), { x: 0.8, y: 2.5, w: 11.7, h: 2.4, align: "center", valign: "middle", fontFace: SERIF, fontSize: 54, color: c.text, fit: "shrink" });
+    const pts = (slide.bullets || []).slice(0, 4);
+    if (pts.length) s.addText(pts.join("      "), { x: 0.8, y: 5.0, w: 11.7, h: 0.6, align: "center", fontFace: SANS, fontSize: 14, color: c.muted });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
+  const renderBand = (slide, index) => {
+    const s = blank();
+    s.addShape("rect", { x: 0.9, y: 0.8, w: 0.08, h: 1.6, fill: { color: c.accent } });
+    if (slide.subtitle) s.addText(String(slide.subtitle).toUpperCase(), { x: 1.2, y: 0.82, w: 10, h: 0.35, fontFace: SANS, fontSize: 11, bold: true, color: c.accent, charSpacing: 3 });
+    s.addText(String(slide.title || ""), { x: 1.15, y: 1.2, w: 11, h: 1.15, fontFace: SERIF, fontSize: 34, color: c.text, fit: "shrink" });
+    const pts = (slide.bullets || []).slice(0, 6);
+    if (pts.length) s.addText(bulletRuns(pts, c.muted, 16), { x: 1.1, y: 2.8, w: 6.4, h: 3.9, fontFace: SANS, fontSize: 16, lineSpacingMultiple: 1.2 });
+    const stats = (slide.stats || []).slice(0, 3);
+    stats.forEach((st, i) => {
+      const y = 2.8 + i * 1.35;
+      s.addShape("rect", { x: 7.9, y, w: 4.5, h: 1.15, fill: { color: c.surface } });
+      s.addText(String(st.value || ""), { x: 8.05, y: y + 0.06, w: 4.2, h: 0.55, fontFace: SERIF, fontSize: 24, color: c.accent, fit: "shrink" });
+      s.addText(String(st.label || ""), { x: 8.05, y: y + 0.62, w: 4.2, h: 0.45, fontFace: SANS, fontSize: 12, color: c.muted, fit: "shrink" });
+    });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
+  const renderSidebar = (slide, index) => {
+    const s = blank();
+    s.addShape("rect", { x: 0, y: 0, w: 4.5, h: H, fill: { color: c.surface } });
+    if (slide.subtitle) s.addText(String(slide.subtitle).toUpperCase(), { x: 0.55, y: 2.1, w: 3.6, h: 0.35, fontFace: SANS, fontSize: 11, bold: true, color: c.accent, charSpacing: 3 });
+    s.addText(String(slide.title || ""), { x: 0.5, y: 2.5, w: 3.7, h: 2.4, fontFace: SERIF, fontSize: 30, color: c.text, fit: "shrink" });
+    rule(s, 0.55, 5.1, 1.1);
+    const pts = (slide.bullets || []).slice(0, 6);
+    if (pts.length) s.addText(bulletRuns(pts, c.muted, 16), { x: 5.1, y: 1.5, w: 7.4, h: 4.4, fontFace: SANS, fontSize: 16, lineSpacingMultiple: 1.25 });
+    const stats = (slide.stats || []).slice(0, 2);
+    stats.forEach((st, i) => {
+      const x = 5.1 + i * 3.8;
+      s.addText(String(st.value || ""), { x, y: 6.0, w: 3.5, h: 0.7, fontFace: SERIF, fontSize: 30, color: c.accent, fit: "shrink" });
+      s.addText(String(st.label || ""), { x, y: 6.72, w: 3.5, h: 0.4, fontFace: SANS, fontSize: 11, color: c.muted, fit: "shrink" });
+    });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
+  const renderPanels = (slide, index) => {
+    const s = blank();
+    s.addText(String(slide.title || ""), { x: 0.9, y: 0.6, w: 11.6, h: 1.0, align: "center", fontFace: SERIF, fontSize: 30, color: c.text, fit: "shrink" });
+    const cmp = slide.compare || {};
+    let sides = [cmp.left || {}, cmp.right || {}];
+    const has = sides.some((x) => x && x.points && x.points.length);
+    if (!has && (slide.bullets || []).length) {
+      const half = Math.ceil(slide.bullets.length / 2);
+      sides = [{ title: "", points: slide.bullets.slice(0, half) }, { title: "", points: slide.bullets.slice(half) }];
+    }
+    sides.forEach((side, i) => {
+      const x = 0.9 + i * 6.0;
+      s.addShape("rect", { x, y: 2.0, w: 5.5, h: 4.6, fill: { color: c.surface } });
+      s.addShape("rect", { x, y: 2.0, w: 5.5, h: 0.12, fill: { color: i ? c.accent2 : c.accent } });
+      if (side.title) s.addText(String(side.title), { x: x + 0.3, y: 2.25, w: 4.9, h: 0.6, fontFace: SANS, fontSize: 16, bold: true, color: c.text, fit: "shrink" });
+      const pts = (side.points || []).slice(0, 6);
+      if (pts.length) s.addText(bulletRuns(pts, c.muted, 14), { x: x + 0.3, y: 3.0, w: 4.9, h: 3.4, fontFace: SANS, fontSize: 14, lineSpacingMultiple: 1.2 });
+    });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
+  const renderBigNumber = (slide, index) => {
+    const s = blank();
+    const stat = (slide.stats && slide.stats[0]) || { value: slide.title, label: slide.subtitle };
+    s.addText(String(stat.value || ""), { x: 1.0, y: 1.6, w: 11.3, h: 3.1, align: "center", valign: "middle", fontFace: SERIF, fontSize: 150, color: c.accent, fit: "shrink" });
+    if (stat.label) s.addText(String(stat.label), { x: 2.0, y: 4.9, w: 9.3, h: 1.0, align: "center", fontFace: SANS, fontSize: 20, color: c.muted, fit: "shrink" });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
   const renderers = {
     cover: renderCover,
     section: renderSection,
@@ -388,6 +467,11 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
     timeline: renderTimeline,
     comparison: renderComparison,
     compose: renderCompose,
+    hero: renderHero,
+    band: renderBand,
+    sidebar: renderSidebar,
+    panels: renderPanels,
+    bigNumber: renderBigNumber,
     closing: renderClosing,
   };
 
