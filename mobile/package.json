@@ -1,0 +1,19 @@
+{
+  "name": "zchat-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capacitor iOS shell for Z Chat. Loads the live site (https://z-chat.men) so UI and features update instantly with the web deploy; only native shell changes need a new build.",
+  "scripts": {
+    "ios:add": "cap add ios",
+    "ios:sync": "cap sync ios",
+    "ios:open": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/ios": "^8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
+    "typescript": "^5.9.3"
+  }
+}
