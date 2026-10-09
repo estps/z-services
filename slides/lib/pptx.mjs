@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { normalizeDeck, normalizeSlide, themeColors } from "./deckgen.mjs";
+import { renderSlidePng } from "./rasterize.mjs";
 
 const W = 13.333;
 const H = 7.5;
@@ -476,6 +477,13 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
   };
 
   slides.forEach((slide, index) => {
+    if (slide.html) {
+      const s = blank();
+      const shot = renderSlidePng(slide.html, c, { width: 1280, height: 720 });
+      if (shot) s.addImage({ data: shot, x: 0, y: 0, w: W, h: H });
+      notes(s, slide);
+      return;
+    }
     const render = renderers[slide.layout] || renderBullets;
     render(slide, index);
   });

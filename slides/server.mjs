@@ -23,6 +23,7 @@ import {
   normalizeTheme,
   recentLayoutSequences,
   recordLayoutSequence,
+  sanitizeSlideHtml,
   upgradeDeck,
 } from "./lib/deckgen.mjs";
 import { buildPptx } from "./lib/pptx.mjs";
@@ -1518,6 +1519,36 @@ async function handleDeckCanva(req, res, user, id) {
   }));
 }
 
+async function handleDeckSave(req, res, user, id) {
+  const file = path.join(STATE_DIR, "decks", `${id}.json`);
+  const deck = await readJson(file, null);
+  if (!deck || deck.owner !== user.id) {
+    return send(req, res, 404, { "Content-Type": "application/json" }, JSON.stringify({ error: "not_found" }));
+  }
+  const raw = await readBody(req);
+  let body = null;
+  try {
+    body = JSON.parse(raw || "{}");
+  } catch {
+    body = null;
+  }
+  if (!body || !Array.isArray(body.slides)) {
+    return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad_request" }));
+  }
+  const existing = Array.isArray(deck.slides) ? deck.slides : [];
+  deck.slides = existing.map((slide, i) => {
+    const patch = body.slides[i];
+    if (!patch || typeof patch !== "object") return slide;
+    const next = { ...slide };
+    if (typeof patch.html === "string") next.html = sanitizeSlideHtml(patch.html);
+    if (typeof patch.notes === "string") next.notes = patch.notes.slice(0, 800);
+    return next;
+  });
+  deck.updatedAt = new Date().toISOString();
+  await writeJson(file, deck);
+  return send(req, res, 200, { "Content-Type": "application/json" }, JSON.stringify({ ok: true }));
+}
+
 async function handleDeck(req, res, user, id) {
   const deck = await readJson(path.join(STATE_DIR, "decks", `${id}.json`), null);
   if (!deck || deck.owner !== user.id) {
@@ -1670,6 +1701,7 @@ async function route(req, res) {
   }
   const deckMatch = /^\/api\/decks\/([a-f0-9]{8,32})$/.exec(pathname);
   if (deckMatch) {
+    if (method === "PUT" || method === "POST") return handleDeckSave(req, res, user, deckMatch[1]);
     return handleDeck(req, res, user, deckMatch[1]);
   }
 

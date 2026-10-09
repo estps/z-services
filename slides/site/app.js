@@ -59,14 +59,17 @@
     return window.ZDeck ? window.ZDeck.normalizeTheme(raw || {}) : null;
   }
 
-  function renderSlidesInto(container, slides, theme, deckTitle, onOpen) {
+  function renderSlidesInto(container, slides, theme, deckTitle, onOpen, opts) {
     container.innerHTML = "";
     if (!window.ZDeck) return;
+    opts = opts || {};
     slides.forEach(function (slide, i) {
       container.appendChild(window.ZDeck.slideCard(slide, i, {
         theme: theme,
         total: slides.length,
         deckTitle: deckTitle || "",
+        editable: opts.editable,
+        onEdit: opts.onEdit,
         onClick: onOpen ? function () { onOpen(i); } : null
       }));
     });
@@ -161,6 +164,30 @@
     }, 3000);
   }
 
+  var editSaveTimer = null;
+  function onSlideEdit(index, html) {
+    if (!state.current || !state.current.slides || !state.current.slides[index]) return;
+    state.current.slides[index].html = html;
+    if (editSaveTimer) clearTimeout(editSaveTimer);
+    editSaveTimer = setTimeout(persistDeckEdits, 800);
+  }
+  function persistDeckEdits() {
+    if (!state.current || !state.current.id) return;
+    var slides = (state.current.slides || []).map(function (sl) {
+      return { html: sl.html || null, notes: sl.notes || null };
+    });
+    api("/api/decks/" + state.current.id, { method: "PUT", body: JSON.stringify({ slides: slides }) })
+      .then(function () {
+        var meta = $("deckMeta");
+        if (meta) {
+          var base = meta.getAttribute("data-base") || meta.textContent;
+          meta.setAttribute("data-base", base);
+          meta.textContent = base + " \u00b7 saved";
+        }
+      })
+      .catch(function () {});
+  }
+
   function openDeck(id) {
     api("/api/decks/" + id).then(function (data) {
       state.current = data.deck;
@@ -170,7 +197,11 @@
       $("deckTitle").textContent = data.deck.title;
       var invites = (data.deck.invitees || []).length ? "Invited: " + data.deck.invitees.join(", ") + " · " : "";
       $("deckMeta").textContent = invites + data.deck.slides.length + " slides · created " + new Date(data.deck.createdAt).toLocaleString();
-      renderSlidesInto($("slides"), data.deck.slides || [], state.currentTheme, data.deck.title, openPresent);
+      $("deckMeta").setAttribute("data-base", $("deckMeta").textContent);
+      renderSlidesInto($("slides"), data.deck.slides || [], state.currentTheme, data.deck.title, openPresent, {
+        editable: true,
+        onEdit: onSlideEdit
+      });
       renderCanvaBar(data.deck);
       renderDeckList();
       updatePresentFrames();

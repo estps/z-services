@@ -489,6 +489,7 @@
       compare: normCompare(raw.compare),
       timeline: normTimeline(raw.timeline),
       blocks: normBlocks(raw.blocks),
+      html: asText(raw.html),
       notes: asText(raw.notes)
     };
   }
@@ -1082,7 +1083,9 @@
         total: slides.length,
         deckTitle: (deck && deck.title) || ctx.deckTitle || "",
         frameClass: ctx.frameClass,
-        onClick: ctx.onClick
+        onClick: ctx.onClick,
+        editable: ctx.editable,
+        onEdit: ctx.onEdit
       }));
     });
     return theme;

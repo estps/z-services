@@ -1010,3 +1010,7 @@
 .dc-bignum-value { font-family: var(--d-display); font-weight: bold; font-size: 220px; line-height: 0.9; color: var(--d-accent); }
 .dc-bignum-label { font-family: var(--d-body); font-size: 30px; color: var(--d-muted); max-width: 72%; }
 .dc--bigNumber .dc-chips { justify-content: center; }
+
+/* ------------------------------------------------------------- html slides */
+.dc--html { padding: 0; }
+.dc-html-frame { display: block; width: 1280px; height: 720px; border: 0; background: transparent; }
