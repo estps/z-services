@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """Keep Supabase Auth's redirect allow-list in sync with the current quick-tunnel
-URLs, so OAuth / magic links work on the rotating tunnel domains.
+URLs so OAuth / magic links work on the rotating tunnel domains.
 
-Reads:
-  /root/.supabase-secret   - the project secret key (sb_secret_...), root-only
-  /srv/zchat/state/quicktunnels.json - zchat/games/slides current URLs
-
-Writes the merged allow-list back via GoTrue's admin settings endpoint, which
-needs the secret key. Safe to run repeatedly (idempotent merge).
+Auth config (uri_allow_list) can only be changed through the Supabase Management
+API, which needs a personal access token (sbp_...). Reads the token from
+/root/.supabase-mgmt-token (root-only). Safe to run repeatedly (idempotent).
 """
 
 import json
 import sys
+import urllib.error
 import urllib.request
 
-SUPA_URL = "https://dwstivxwyqdogzgxnidm.supabase.co"
-KEY_FILE = "/root/.supabase-secret"
+MGMT = "https://api.supabase.com/v1"
+PROJECT = "dwstivxwyqdogzgxnidm"
+TOKEN_FILE = "/root/.supabase-mgmt-token"
 STATE_FILE = "/srv/zchat/state/quicktunnels.json"
 
-# Patterns that should always be allowed, independent of tunnels.
 BASE_ALLOW = [
     "https://z-chat.men",
     "https://z-chat.men/**",
@@ -28,7 +26,6 @@ BASE_ALLOW = [
     "https://present.z-chat.men/**",
     "https://game.z-chat.men/**",
     "https://access.z-chat.men/**",
-    # Capacitor native shells
     "capacitor://localhost",
     "capacitor://localhost/**",
     "https://localhost",
@@ -36,17 +33,13 @@ BASE_ALLOW = [
 ]
 
 
-def call(method, path, body=None):
+def call(method, path, token, body=None):
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(
-        SUPA_URL + path,
+        MGMT + path,
         method=method,
         data=data,
-        headers={
-            "apikey": KEY,
-            "Authorization": "Bearer " + KEY,
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         raw = response.read()
@@ -54,14 +47,13 @@ def call(method, path, body=None):
 
 
 def main():
-    global KEY
     try:
-        KEY = open(KEY_FILE, encoding="utf-8").read().strip()
+        token = open(TOKEN_FILE, encoding="utf-8").read().strip()
     except OSError:
-        print("[redirects] no secret key at", KEY_FILE, file=sys.stderr)
+        print("[redirects] no management token at", TOKEN_FILE, file=sys.stderr)
         return 0
-    if not KEY:
-        print("[redirects] empty secret key", file=sys.stderr)
+    if not token:
+        print("[redirects] empty management token", file=sys.stderr)
         return 0
 
     quick = []
@@ -74,10 +66,14 @@ def main():
     except Exception as error:  # noqa: BLE001
         print("[redirects] could not read state:", error, file=sys.stderr)
 
+    path = f"/projects/{PROJECT}/config/auth"
     try:
-        current = call("GET", "/auth/v1/settings")
+        current = call("GET", path, token)
+    except urllib.error.HTTPError as error:
+        print("[redirects] GET config/auth failed:", error.code, error.read()[:200], file=sys.stderr)
+        return 1
     except Exception as error:  # noqa: BLE001
-        print("[redirects] GET settings failed:", error, file=sys.stderr)
+        print("[redirects] GET config/auth failed:", error, file=sys.stderr)
         return 1
 
     existing = [entry.strip() for entry in str(current.get("uri_allow_list") or "").split(",") if entry.strip()]
@@ -85,13 +81,15 @@ def main():
     for url in quick:
         merged.add(url)
         merged.add(url + "/**")
-        merged.add(url + "/*")
 
     allow_list = ",".join(sorted(merged))
     try:
-        call("PUT", "/auth/v1/settings", {"uri_allow_list": allow_list})
+        call("PATCH", path, token, {"uri_allow_list": allow_list})
+    except urllib.error.HTTPError as error:
+        print("[redirects] PATCH config/auth failed:", error.code, error.read()[:200], file=sys.stderr)
+        return 1
     except Exception as error:  # noqa: BLE001
-        print("[redirects] PUT settings failed:", error, file=sys.stderr)
+        print("[redirects] PATCH config/auth failed:", error, file=sys.stderr)
         return 1
 
     print(f"[redirects] allow-list now has {len(merged)} entries; quick tunnels: {quick}")
