@@ -12,7 +12,7 @@
 
   var DESIGN_W = 1280;
   var DESIGN_H = 720;
-  var LAYOUT_NAMES = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "closing"];
+  var LAYOUT_NAMES = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "closing"];
   var FALLBACK_PALETTE = ["1E1B16", "C9A227", "FFFFFF", "CFC6AE"];
 
   /* ------------------------------------------------------------- color utils */
@@ -445,6 +445,35 @@
     return { text: asText(v.text), attribution: asText(v.attribution) };
   }
 
+  function normBlocks(raw) {
+    return asList(raw).map(function (entry) {
+      var src = (entry && typeof entry === "object") ? entry : {};
+      var type = asText(src.type || src.kind).toLowerCase();
+      var block = { type: type };
+      if (type === "list") block.items = asList(src.items || src.bullets).map(asText).filter(Boolean);
+      else if (type === "stats") block.items = normStats(src.items || src.stats);
+      else if (type === "chips") block.items = asList(src.items).map(asText).filter(Boolean);
+      else if (type === "stat") { block.value = asText(src.value); block.label = asText(src.label); }
+      else if (type === "quote") { block.text = asText(src.text); block.attribution = asText(src.attribution); }
+      else block.text = asText(src.text != null ? src.text : src.value);
+      var size = asText(src.size).toLowerCase();
+      block.size = ["s", "m", "l", "xl"].indexOf(size) >= 0 ? size : "";
+      var align = asText(src.align).toLowerCase();
+      block.align = ["left", "center", "right"].indexOf(align) >= 0 ? align : "";
+      var span = Number(src.span);
+      if (span >= 1 && span <= 3) block.span = Math.round(span);
+      if (type === "list" && src.numbered) block.numbered = true;
+      if (type === "list" && Number(src.columns) === 2) block.columns = 2;
+      if (type === "kicker") block.text = block.text || asText(src.kicker);
+      return block;
+    }).filter(function (b) {
+      if (b.type === "divider" || b.type === "spacer") return true;
+      if (b.type === "list" || b.type === "chips" || b.type === "stats") return b.items && b.items.length;
+      if (b.type === "stat") return b.value || b.label;
+      return Boolean(b.text);
+    }).slice(0, 10);
+  }
+
   function normalizeSlide(raw) {
     if (raw && raw.__z) return raw;
     raw = (raw && typeof raw === "object") ? raw : {};
@@ -459,6 +488,7 @@
       quote: normQuote(raw.quote),
       compare: normCompare(raw.compare),
       timeline: normTimeline(raw.timeline),
+      blocks: normBlocks(raw.blocks),
       notes: asText(raw.notes)
     };
   }
@@ -743,6 +773,59 @@
       card.appendChild(ul);
       grid.appendChild(card);
       if (side === "left") grid.appendChild(div("dc-compare-vs", "VS"));
+    });
+    body.appendChild(grid);
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.compose = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-compose");
+    var blocks = (s.blocks && s.blocks.length) ? s.blocks : [];
+    var hasTitleBlock = blocks.some(function (b) { return b.type === "title"; });
+    if (s.title && !hasTitleBlock) body.appendChild(titleBlock("dc-heading", s.title, { h: "h2" }));
+    var grid = div("dc-grid");
+    blocks.forEach(function (b) {
+      var el = null;
+      if (b.type === "kicker") el = div("dc-kicker", asText(b.text).toUpperCase());
+      else if (b.type === "title") el = tag((b.size === "xl" || b.size === "l") ? "h2" : "h3", "dc-blk-title", b.text);
+      else if (b.type === "text") el = tag("p", "dc-blk-text", b.text);
+      else if (b.type === "callout") el = div("dc-blk-callout", b.text);
+      else if (b.type === "quote") {
+        el = tag("blockquote", "dc-blk-quote", b.text);
+        if (b.attribution) el.appendChild(span("dc-blk-attr", b.attribution));
+      } else if (b.type === "chips") {
+        el = div("dc-chips");
+        b.items.forEach(function (item) { el.appendChild(span("dc-chip", item)); });
+      } else if (b.type === "stat") {
+        el = div("dc-blk-stat");
+        el.appendChild(div("dc-blk-stat-value", b.value));
+        el.appendChild(div("dc-blk-stat-label", b.label));
+      } else if (b.type === "stats") {
+        el = div("dc-blk-statgrid");
+        b.items.forEach(function (item) {
+          var card = div("dc-blk-statcard");
+          card.appendChild(div("dc-blk-stat-value", item.value));
+          card.appendChild(div("dc-blk-stat-label", item.label));
+          el.appendChild(card);
+        });
+      } else if (b.type === "list") {
+        el = tag(b.numbered ? "ol" : "ul", "dc-blk-list");
+        b.items.forEach(function (item) { el.appendChild(tag("li", null, item)); });
+        if (b.columns === 2) el.classList.add("is-two-col");
+      } else if (b.type === "divider") {
+        el = div("dc-rule");
+      } else if (b.type === "spacer") {
+        el = div("dc-blk-spacer");
+      }
+      if (!el) return;
+      var extra = "dc-blk dc-blk--" + b.type;
+      if (b.size) extra += " is-" + b.size;
+      if (b.align) extra += " is-" + b.align;
+      el.className = (el.className ? el.className + " " : "") + extra;
+      if (b.span) el.style.gridColumn = "span " + b.span;
+      grid.appendChild(el);
     });
     body.appendChild(grid);
     cv.appendChild(body);

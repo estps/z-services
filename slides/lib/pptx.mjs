@@ -310,6 +310,73 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
 
   };
 
+  const renderCompose = (slide, index) => {
+    const s = blank();
+    const left = 0.9;
+    const width = 11.55;
+    if (slide.title) {
+      s.addText(String(slide.title), { x: left, y: 0.55, w: width, h: 1.0, fontFace: SERIF, fontSize: 30, color: c.text, fit: "shrink" });
+      rule(s, 0.93, 1.58, 1.15);
+    }
+    let y = slide.title ? 1.95 : 0.9;
+    const blocks = (slide.blocks || []);
+    blocks.forEach((b) => {
+      if (y > 6.85) return;
+      if (b.type === "kicker") {
+        eyebrow(s, b.text, left, y, { size: 12 });
+        y += 0.45;
+      } else if (b.type === "title") {
+        const size = b.size === "xl" ? 32 : b.size === "l" ? 27 : b.size === "s" ? 19 : 23;
+        s.addText(String(b.text || ""), { x: left, y, w: width, h: 0.95, fontFace: SERIF, fontSize: size, color: c.text, fit: "shrink" });
+        y += 1.0;
+      } else if (b.type === "text") {
+        s.addText(String(b.text || ""), { x: left, y, w: width, h: 1.1, fontFace: SANS, fontSize: 16, color: c.muted, lineSpacingMultiple: 1.25, fit: "shrink" });
+        y += 1.2;
+      } else if (b.type === "callout") {
+        s.addShape("roundRect", { x: left, y, w: width, h: 1.0, fill: { color: c.surface }, line: { color: c.accent, width: 1 }, rectRadius: 0.08 });
+        s.addText(String(b.text || ""), { x: left + 0.2, y: y + 0.08, w: width - 0.4, h: 0.84, valign: "middle", fontFace: SANS, fontSize: 15, color: c.text, fit: "shrink" });
+        y += 1.15;
+      } else if (b.type === "quote") {
+        s.addShape("rect", { x: left, y, w: 0.05, h: 1.05, fill: { color: c.accent } });
+        s.addText(String(b.text || ""), { x: left + 0.25, y, w: width - 0.25, h: 0.8, fontFace: SERIF, italic: true, fontSize: 20, color: c.text, fit: "shrink" });
+        if (b.attribution) s.addText(String(b.attribution), { x: left + 0.25, y: y + 0.8, w: width - 0.25, h: 0.3, fontFace: SANS, fontSize: 11, color: c.accent });
+        y += 1.25;
+      } else if (b.type === "chips") {
+        s.addText((b.items || []).join("      "), { x: left, y, w: width, h: 0.45, fontFace: SANS, fontSize: 14, color: c.accent, charSpacing: 1 });
+        y += 0.6;
+      } else if (b.type === "stat") {
+        s.addText(String(b.value || ""), { x: left, y, w: 5.0, h: 0.85, fontFace: SERIF, fontSize: 40, color: c.accent, fit: "shrink" });
+        s.addText(String(b.label || ""), { x: left, y: y + 0.82, w: width, h: 0.4, fontFace: SANS, fontSize: 14, color: c.muted });
+        y += 1.4;
+      } else if (b.type === "stats") {
+        const items = (b.items || []).slice(0, 4);
+        const gap = 0.3;
+        const w2 = (width - gap * Math.max(0, items.length - 1)) / Math.max(1, items.length);
+        items.forEach((it, i) => {
+          const x = left + i * (w2 + gap);
+          s.addShape("rect", { x, y, w: w2, h: 1.5, fill: { color: c.surface } });
+          s.addShape("rect", { x, y, w: w2, h: 0.06, fill: { color: i % 2 ? c.accent2 : c.accent } });
+          s.addText(String(it.value || ""), { x: x + 0.16, y: y + 0.12, w: w2 - 0.32, h: 0.78, valign: "middle", fontFace: SERIF, fontSize: 30, color: i % 2 ? c.accent2 : c.accent, fit: "shrink" });
+          s.addText(String(it.label || ""), { x: x + 0.16, y: y + 0.92, w: w2 - 0.32, h: 0.5, fontFace: SANS, fontSize: 11, color: c.muted, fit: "shrink" });
+        });
+        y += 1.7;
+      } else if (b.type === "list") {
+        const points = (b.items || []).slice(0, 7);
+        s.addText(bulletRuns(points, c.muted, 15), {
+          x: left, y, w: width, h: Math.min(4.2, 0.42 * points.length + 0.3), fontFace: SANS, fontSize: 15, lineSpacingMultiple: 1.15,
+        });
+        y += Math.min(4.2, 0.42 * points.length + 0.35);
+      } else if (b.type === "divider") {
+        rule(s, left, y, 1.3);
+        y += 0.3;
+      } else if (b.type === "spacer") {
+        y += 0.3;
+      }
+    });
+    pageNo(s, index);
+    notes(s, slide);
+  };
+
   const renderers = {
     cover: renderCover,
     section: renderSection,
@@ -320,6 +387,7 @@ export async function buildPptx(deck, { imagesDir = "/srv/zslides/state/images" 
     stats: renderStats,
     timeline: renderTimeline,
     comparison: renderComparison,
+    compose: renderCompose,
     closing: renderClosing,
   };
 

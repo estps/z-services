@@ -24,7 +24,12 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const LAYOUTS = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "closing"];
+export const LAYOUTS = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "closing"];
+
+/* Block vocabulary for the "compose" layout: the model builds each slide from
+   an ordered list of blocks laid out on a 3-column grid, so no two slides have
+   to share a fixed template. */
+export const BLOCK_TYPES = ["kicker", "title", "text", "list", "stat", "stats", "quote", "callout", "chips", "divider", "spacer"];
 
 const HEX = /^[0-9a-fA-F]{6}$/;
 const FALLBACK = { bg: "14120E", accent: "D4A72C", text: "F7F3E8", muted: "C4BAA4" };
@@ -176,6 +181,49 @@ const s = (value, max) => String(value == null ? "" : value).replace(/\s+/g, " "
 const list = (value, maxItems, maxLen) =>
   (Array.isArray(value) ? value : []).map((entry) => s(entry, maxLen)).filter(Boolean).slice(0, maxItems);
 
+function normalizeBlocks(raw) {
+  const blocks = (Array.isArray(raw) ? raw : []).map((entry) => {
+    const src = entry && typeof entry === "object" ? entry : {};
+    let type = s(src.type || src.kind, 16).toLowerCase();
+    if (!BLOCK_TYPES.includes(type)) type = Array.isArray(src.items) || Array.isArray(src.bullets) ? "list" : "text";
+    const block = { type };
+    if (type === "title" || type === "text" || type === "callout" || type === "kicker") {
+      block.text = s(src.text != null ? src.text : src.value, type === "kicker" ? 80 : 400);
+    } else if (type === "quote") {
+      block.text = s(src.text, 420);
+      const attribution = s(src.attribution || src.author, 120);
+      if (attribution) block.attribution = attribution;
+    } else if (type === "list") {
+      block.items = list(src.items || src.bullets, 8, 200);
+      if (src.numbered) block.numbered = true;
+      if (Number(src.columns) === 2) block.columns = 2;
+    } else if (type === "chips") {
+      block.items = list(src.items, 8, 40);
+    } else if (type === "stat") {
+      block.value = s(src.value, 24);
+      block.label = s(src.label, 80);
+    } else if (type === "stats") {
+      block.items = (Array.isArray(src.items || src.stats) ? src.items || src.stats : [])
+        .map((item) => ({ value: s(item && item.value, 24), label: s(item && item.label, 80) }))
+        .filter((item) => item.value || item.label)
+        .slice(0, 4);
+    }
+    if (["s", "m", "l", "xl"].includes(src.size)) block.size = src.size;
+    if (["left", "center", "right"].includes(src.align)) block.align = src.align;
+    const span = Number(src.span);
+    if (span >= 1 && span <= 3) block.span = Math.round(span);
+    return block;
+  });
+  return blocks
+    .filter((block) => {
+      if (block.type === "divider" || block.type === "spacer") return true;
+      if (block.type === "list" || block.type === "chips" || block.type === "stats") return block.items && block.items.length;
+      if (block.type === "stat") return block.value || block.label;
+      return Boolean(block.text);
+    })
+    .slice(0, 10);
+}
+
 function inferLayout(raw) {
   if (raw.stats && (Array.isArray(raw.stats) ? raw.stats.length : 0)) return "stats";
   if (raw.timeline && (Array.isArray(raw.timeline) ? raw.timeline.length : 0)) return "timeline";
@@ -190,6 +238,8 @@ export function normalizeSlide(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   let layout = s(source.layout || source.type || source.kind, 20).toLowerCase();
   if (!LAYOUTS.includes(layout)) layout = inferLayout(source);
+  const blocks = normalizeBlocks(source.blocks);
+  if (blocks.length >= 2) layout = "compose";
   const subtitle = s(source.subtitle || source.kicker, 200);
   const bullets = list(source.bullets, 8, 240);
   const slide = { layout, title: s(source.title, 140) || subtitle || bullets[0] || "Overview" };
@@ -222,6 +272,7 @@ export function normalizeSlide(raw) {
   switch (layout) {
     case "cover":
     case "section":
+    case "compose":
     case "closing":
       break;
     case "split":
@@ -254,6 +305,7 @@ export function normalizeSlide(raw) {
       layout = "bullets";
   }
   slide.layout = layout;
+  if (layout === "compose") slide.blocks = blocks;
   if (layout === "bullets") slide.bullets = bullets.length ? bullets : [slide.title];
   else if (bullets.length && (layout === "section" || layout === "cover" || layout === "closing")) slide.bullets = bullets;
   if (layout === "image") slide.image = image || { query: slide.title, url: "", credit: "" };
@@ -391,17 +443,18 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     : "";
   const structure =
     target >= 6
-      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; use at least 2 "section" dividers; use at least 4 DISTINCT layouts overall; include at least 2 slides from [quote, stats, timeline, comparison, image]; never repeat the same layout 3 times in a row; avoid two adjacent slides with the same layout.`
-      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; use at least 2 distinct layouts; avoid two adjacent slides with the same layout.`;
+      ? `Structural rules: slide 1 layout "cover"; last slide layout "closing"; use at least 2 "section" dividers; use at least 4 DISTINCT layouts overall; prefer "compose" for most content slides (aim for at least half) and use [quote, stats, timeline, comparison, image, split] for the rest; give every compose slide a DIFFERENT block arrangement; never repeat the same layout 3 times in a row; avoid two adjacent slides with the same layout.`
+      : `Structural rules: slide 1 layout "cover"; if there are 3+ slides make the last one "closing"; prefer "compose" for content slides; use at least 2 distinct layouts; avoid two adjacent slides with the same layout.`;
   return [
     "You are a senior presentation designer. Create a visually varied, premium slide deck.",
     `Return STRICT JSON only, no markdown, no code fences, exactly this shape:`,
-    `{"title":"Deck title","subtitle":"One-line deck subtitle","theme":{"name":"Short theme name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"layout":"cover","title":"...","subtitle":"...","notes":"speaker note"},{"layout":"bullets","title":"...","bullets":["..."],"notes":"..."},{"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}]}`,
+    `{"title":"Deck title","subtitle":"One-line deck subtitle","theme":{"name":"Short theme name","palette":["RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB","RRGGBB"],"mood":"two words"},"slides":[{"layout":"cover","title":"...","subtitle":"...","notes":"speaker note"},{"layout":"compose","title":"...","blocks":[{"type":"kicker","text":"..."},{"type":"title","text":"...","size":"l"},{"type":"text","text":"...","span":2},{"type":"stat","value":"42%","label":"...","span":1}],"notes":"..."},{"layout":"stats","title":"...","stats":[{"value":"42%","label":"..."}],"notes":"..."}]}`,
     `Allowed layout values ONLY: ${LAYOUTS.join(", ")}.`,
     `slides MUST contain EXACTLY ${target} slide objects - count them, fill every one, no placeholders.`,
     `Every slide - including section dividers - must have a specific, descriptive title; never output an empty or "Untitled" title.`,
     structure,
     `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split.`,
+    `Compose blocks (layout "compose"): blocks is an ORDERED array; types: kicker{text}, title{text,size:s|m|l|xl}, text{text,size}, list{items[],numbered?,columns?:1|2}, stat{value,label}, stats{items[{value,label}]}, quote{text,attribution}, callout{text}, chips{items[]}, divider{}, spacer{}. Every block may set span (1-3 columns of a 3-column grid) and align (left|center|right). Put 4-9 blocks per slide, vary the spans (e.g. a span:2 text next to a span:1 stat) and never reuse the same arrangement on another slide.`,
     `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
     `Theme: derive from the topic's mood, make it distinctive, palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT "#"; background must be dark or light enough that "text" is clearly readable; "accent" must pop on the background.`,
     `Palette family to start from (adapt its hues to the topic instead of copying it blindly; stay in this family's temperature and contrast): ${family}.`,
