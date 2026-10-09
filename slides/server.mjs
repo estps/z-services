@@ -107,7 +107,7 @@ const ADMIN_MAX_PAGES = Number(process.env.ADMIN_MAX_PAGES || 20);
 const MIN_PAGES = Number(process.env.MIN_PAGES || 8);
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 7000);
 const IMAGES_DIR = path.join(STATE_DIR, "images");
-const MONTHLY_BUDGET_USD = Number(process.env.MONTHLY_BUDGET_USD || 5);
+const MONTHLY_BUDGET_USD = Number(process.env.MONTHLY_BUDGET_USD || 15);
 /* deepseek-chat pricing, USD per 1M tokens (approx) */
 const COST_IN_PER_M = Number(process.env.COST_IN_PER_M || 0.27);
 const COST_OUT_PER_M = Number(process.env.COST_OUT_PER_M || 1.1);
