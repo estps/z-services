@@ -427,10 +427,19 @@ export function ensureUniqueSequence(slides, recent) {
 
 /* ---------------- prompt ---------------- */
 
-export function buildPrompt({ details, pages, invitees, research, avoidSequences } = {}) {
+export function buildPrompt({ details, pages, invitees, research, avoidSequences, detail } = {}) {
   const target = Math.max(1, Number(pages) || 12);
   const seed = STYLE_SEEDS[crypto.randomInt(STYLE_SEEDS.length)];
   const family = THEME_FAMILIES[crypto.randomInt(THEME_FAMILIES.length)];
+  const detailLevel = Math.max(1, Math.min(5, Math.round(Number(detail) || 3)));
+  const detailGuide = [
+    "",
+    "Lean: minimal - short titles, at most 2 short bullets of 8 words or fewer, no filler; favour one strong statement per slide.",
+    "Light: concise - 3-4 short bullets or one tight sentence; only the essentials.",
+    "Balanced: 3-5 bullets of up to 14 words, or one short paragraph; one clear idea per block.",
+    "Detailed: 4-6 bullets or a full paragraph per slide; add supporting specifics, examples and numbers.",
+    "In-depth: rich and thorough - 5-7 bullets or two paragraphs, extra stats, concrete examples, figures and nuance; every slide should teach something.",
+  ][detailLevel];
   const audience = invitees && invitees.length ? `Intended audience/invitees: ${invitees.join(", ")}.` : "";
   const facts = research && research.facts && research.facts.length
     ? `\nWeb research notes (real facts gathered from public pages; fold in only what is relevant, never mention the research):\n${research.facts.map((f) => `- ${f}`).join("\n")}`
@@ -464,6 +473,7 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     avoid,
     audience,
     facts,
+    `Content detail level (${detailLevel}/5): ${detailGuide}`,
     `Brief: ${details}`,
   ]
     .filter(Boolean)

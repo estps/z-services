@@ -6,7 +6,7 @@
   <title>Z Slides — AI presentations</title>
   <meta name="color-scheme" content="dark" />
   <link rel="stylesheet" href="/styles.css?v=3" />
-  <link rel="stylesheet" href="/deck.css?v=4" />
+  <link rel="stylesheet" href="/deck.css?v=5" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23e07b2f'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='system-ui' font-weight='700'>Z</text></svg>" />
 </head>
 <body>
@@ -84,6 +84,11 @@
           <input id="pages" type="range" min="1" max="6" value="6" />
           <output id="pagesOut">6 pages</output>
         </label>
+        <label class="field">
+          <span>Detail level <em>(how much depth on each slide)</em></span>
+          <input id="detail" type="range" min="1" max="5" value="3" />
+          <output id="detailOut">Balanced</output>
+        </label>
         <p id="formError" class="form-error" hidden></p>
         <div class="dialog-actions">
           <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
@@ -116,7 +121,7 @@
     <div class="present-dots" id="presentDots"></div>
   </div>
 
-  <script src="/deck-render.js?v=4"></script>
-  <script src="/app.js?v=4"></script>
+  <script src="/deck-render.js?v=5"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

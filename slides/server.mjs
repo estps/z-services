@@ -1349,42 +1349,22 @@ async function handleGenerate(req, res, user) {
   if (!body || typeof body !== "object") {
     return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad_request" }));
   }
-  const admin = ADMIN_IDS.has(user.id);
-  const maxPages = admin ? ADMIN_MAX_PAGES : MAX_PAGES;
-  const details = String(body.details || "").trim();
-  const requested = Number(body.pages);
-  const dynamicMax = Math.max(MIN_PAGES, Math.min(16, maxPages));
-  const pages = Number.isFinite(requested) && requested > 0
-    ? Math.max(1, Math.min(maxPages, Math.floor(requested)))
-    : Math.min(maxPages, crypto.randomInt(MIN_PAGES, dynamicMax + 1));
-  const invitees = (Array.isArray(body.invitees) ? body.invitees : String(body.invitees || "").split(","))
-    .map((entry) => String(entry).trim())
-    .filter(Boolean)
-    .slice(0, 20);
-  if (details.length < 10) {
-    return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "details_too_short", message: "Tell the AI a bit more about the presentation." }));
+  let prep;
+  try {
+    prep = await prepareGeneration(user, body);
+  } catch (err) {
+    if (err instanceof GenerationError) {
+      return send(req, res, err.status, { "Content-Type": "application/json" }, JSON.stringify({ error: err.code, message: err.message }));
+    }
+    return send(req, res, 500, { "Content-Type": "application/json" }, JSON.stringify({ error: "prepare_failed" }));
   }
-  if (details.length > 2000) {
-    return send(req, res, 400, { "Content-Type": "application/json" }, JSON.stringify({ error: "details_too_long" }));
-  }
-  const usage = await getUsage(user.id);
-  if (!admin && usage.total >= FREE_DECKS) {
-    return send(req, res, 402, { "Content-Type": "application/json" }, JSON.stringify({ error: "quota", message: `You have used all ${FREE_DECKS} free presentations.` }));
-  }
-  const budget = await getBudget();
-  if (budget.usd >= MONTHLY_BUDGET_USD) {
-    return send(req, res, 503, { "Content-Type": "application/json" }, JSON.stringify({ error: "budget", message: "This month's AI budget is used up. Try again next month." }));
-  }
-  const canvaTokens = await getCanvaTokens(user.id);
-  if (!canvaTokens || !canvaTokens.refresh_token) {
-    return send(req, res, 403, { "Content-Type": "application/json" }, JSON.stringify({ error: "canva_required", message: "Connect Canva first (bottom of the sidebar) - presentations are created in your Canva account." }));
-  }
+  const { details, pages, invitees, detail } = prep;
 
   let generated;
   try {
     const research = await researchTopic(details, { stateDir: STATE_DIR }).catch(() => ({ facts: [], sources: [] }));
     const avoid = await recentLayoutSequences(STATE_DIR, 6);
-    generated = await generateDeck(details, pages, invitees, research, avoid);
+    generated = await generateDeck(details, pages, invitees, research, avoid, detail);
   } catch (err) {
     console.error("[zslides] generation failed:", err);
     return send(req, res, 502, { "Content-Type": "application/json" }, JSON.stringify({ error: "ai_failed", message: String(err.message || err) }));

@@ -322,10 +322,16 @@
   var pages = $("pages");
   pages.addEventListener("input", function () { $("pagesOut").textContent = pages.value + (pages.value === "1" ? " page" : " pages"); });
 
+  var DETAIL_LABELS = ["", "Lean", "Light", "Balanced", "Detailed", "In-depth"];
+  var detail = $("detail");
+  function renderDetail() { $("detailOut").textContent = DETAIL_LABELS[Number(detail.value)] || "Balanced"; }
+  detail.addEventListener("input", renderDetail);
+  renderDetail();
+
   form.addEventListener("submit", function (event) {
     event.preventDefault();
     var invitees = $("invitees").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-    var payload = { invitees: invitees, details: $("details").value, pages: Number(pages.value) };
+    var payload = { invitees: invitees, details: $("details").value, pages: Number(pages.value), detail: Number(detail.value) };
     startBuildView();
     fetch("/api/generate-stream", {
       method: "POST",
