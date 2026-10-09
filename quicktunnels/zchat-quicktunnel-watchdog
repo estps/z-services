@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Desired-state + health management for Z Chat quick-tunnel mode.
+#  zchat/games/slides: real Cloudflare (trycloudflare) quick tunnels. The
+#  tunnel process is stopped when the site is disabled and restarted when the
+#  URL fails two checks in a row, with a 15-minute cooldown so Cloudflare's
+#  quick-tunnel rate limit is never hammered.
+set -u
+STATE=/srv/zchat/state/quicktunnels.json
+STATE_TOOL=/srv/zchat/quicktunnels/state_tool.py
+RESTART_COOLDOWN=900
+
+url_for() { python3 -c "import json; print(json.load(open('$STATE'))['$1'].get('url',''))" 2>/dev/null || true; }
+enabled_for() { python3 -c "import json; print('1' if json.load(open('$STATE'))['$1']['enabled'] else '')" 2>/dev/null || true; }
+check() { curl -sf -o /dev/null -m 10 "$1"; }
+
+for site in zchat games slides; do
+  unit="zchat-quicktunnel@$site.service"
+  if [ "$(enabled_for "$site")" = "1" ]; then
+    systemctl is-active --quiet "$unit" || systemctl start "$unit"
+    url="$(url_for "$site")"
+    [ -n "$url" ] || continue
+    flag="/srv/zchat/state/quicktunnel-watchdog.$site"
+    cool="/srv/zchat/state/quicktunnel-restart.$site"
+    if check "$url"; then
+      echo 0 > "$flag"
+    else
+      n=$(( $(cat "$flag" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" > "$flag"
+      if [ "$n" -ge 2 ]; then
+        last=$(cat "$cool" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        if [ $((now - last)) -ge "$RESTART_COOLDOWN" ]; then
+          systemctl restart "$unit"
+          echo "$now" > "$cool"
+        fi
+        echo 0 > "$flag"
+      fi
+    fi
+  else
+    systemctl is-active --quiet "$unit" && systemctl stop "$unit"
+  fi
+done
+exit 0
