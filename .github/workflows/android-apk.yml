@@ -56,6 +56,9 @@ jobs:
             npx cap add android
           fi
 
+      - name: Generate app icon from assets/icon.png
+        run: npx --yes @capacitor/assets generate --android
+
       - name: Add Android permissions (camera, mic, notifications)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
