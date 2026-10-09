@@ -30,6 +30,18 @@
   .muted { color: oklch(0.68 0.015 185); font-size: 12px; }
   .msg { color: #f5a524; font-size: 13px; min-height: 18px; margin: 6px 0; }
   .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; font-size: 12px; white-space: pre-wrap; color: oklch(0.88 0.008 185); }
+  .specs { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .spec { background: oklch(0.165 0.011 194); border: 1px solid oklch(0.3 0.013 193); border-radius: 10px; padding: 9px 11px; min-width: 0; }
+  .spec b { display: block; font-size: 11px; color: oklch(0.68 0.015 185); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  .spec span { display: block; font-size: 13px; overflow-wrap: anywhere; }
+  .meters { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 18px; }
+  .meter .lbl { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: oklch(0.78 0.01 190); margin-bottom: 5px; }
+  .meter .lbl b { color: oklch(0.955 0.006 160); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bar { height: 8px; background: oklch(0.165 0.011 194); border: 1px solid oklch(0.3 0.013 193); border-radius: 999px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, oklch(0.72 0.14 168), oklch(0.86 0.15 92)); transition: width .4s ease; }
+  .bar.hot > i { background: linear-gradient(90deg, oklch(0.86 0.15 92), oklch(0.62 0.19 27)); }
+  .bar.soft > i { background: oklch(0.72 0.14 168 / 0.55); }
+  .bar.na > i { background: oklch(0.45 0.01 193); }
   a { color: oklch(0.86 0.15 92); }
   .hide { display: none; }
 </style>
@@ -84,8 +96,10 @@
       <div id="submissions" class="muted">loading…</div>
     </div>
     <div class="card">
-      <h2>System</h2>
-      <div class="stats" id="sysStats"></div>
+      <h2>Black box — specs &amp; utilization <span class="muted" id="sysUpdated"></span></h2>
+      <div class="specs" id="specGrid"><div class="muted">loading…</div></div>
+      <div class="meters" id="meters"></div>
+      <div class="muted" id="sysMeta" style="margin-top:12px"></div>
     </div>
     <div class="card">
       <h2>z-chat deploy log (last 40)</h2>
@@ -133,9 +147,145 @@
       $("services").appendChild(el);
     }
     $("healthTime").textContent = body.time ? "· " + new Date(body.time).toLocaleTimeString() : "";
-    $("sysStats").textContent =
-      `memory\n${body.mem || ""}\n\n${body.uptime || ""}\n\ndisk\n${body.disk || ""}\n\nblackscan frozen lines: ${body.frozenCount || "n/a"}`;
   }
+
+  /* ---------------- Black box specs & live utilization ---------------- */
+  const SYS_REFRESH_MS = 5000;
+  let sysTimer = null;
+
+  function fmtMb(mb) {
+    if (!Number.isFinite(Number(mb))) return "—";
+    const n = Number(mb);
+    return n >= 1024 ? (n / 1024).toFixed(1) + " GB" : Math.round(n) + " MB";
+  }
+  function fmtUptime(sec) {
+    if (!Number.isFinite(Number(sec))) return "—";
+    const s = Math.floor(Number(sec));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+  function fmtNum(v, digits = 1) {
+    if (!Number.isFinite(Number(v))) return "—";
+    return Number(v).toFixed(digits).replace(/\.0$/, "");
+  }
+
+  function specTile(label, value) {
+    const el = document.createElement("div");
+    el.className = "spec";
+    const b = document.createElement("b");
+    b.textContent = label;
+    const s = document.createElement("span");
+    s.textContent = value == null || value === "" ? "—" : String(value);
+    el.append(b, s);
+    return el;
+  }
+
+  function meter(label, pct, value, opts = {}) {
+    const el = document.createElement("div");
+    el.className = "meter";
+    const lbl = document.createElement("div");
+    lbl.className = "lbl";
+    const l = document.createElement("span");
+    l.textContent = label;
+    const v = document.createElement("b");
+    v.textContent = value;
+    lbl.append(l, v);
+    const bar = document.createElement("div");
+    bar.className = "bar" + (opts.soft ? " soft" : "") + (opts.na ? " na" : "");
+    if (!opts.na && Number.isFinite(Number(pct)) && Number(pct) >= 85) bar.className += " hot";
+    const fill = document.createElement("i");
+    const width = Number.isFinite(Number(pct)) ? Math.max(0, Math.min(100, Number(pct))) : 0;
+    fill.style.width = width + "%";
+    bar.appendChild(fill);
+    el.append(lbl, bar);
+    return el;
+  }
+
+  function renderSystem(body) {
+    const specWrap = $("specGrid");
+    specWrap.textContent = "";
+    const cpu = body.cpu || {};
+    const mem = body.memory || {};
+    const sys = body.system || {};
+    const disks = Array.isArray(body.disk) ? body.disk : [];
+    const gpus = body.gpu && Array.isArray(body.gpu.gpus) ? body.gpu.gpus : [];
+    const gpu = gpus[0] || null;
+
+    specWrap.append(
+      specTile("CPU", `${cpu.model || "unknown"} — ${cpu.physical_cores ?? "?"} cores / ${cpu.logical_threads ?? "?"} threads`),
+      specTile("Memory", fmtMb(mem.total_mb)),
+      specTile("Disk", disks.map((d) => `${d.mount} ${d.size || ""}`).join(" · ") || "n/a"),
+      specTile("GPU", gpu ? gpu.name.replace(/^NVIDIA\s+/i, "") : "not detected"),
+    );
+
+    const metersWrap = $("meters");
+    metersWrap.textContent = "";
+    metersWrap.append(meter("CPU", cpu.utilization_pct, `${fmtNum(cpu.utilization_pct)}%`));
+    metersWrap.append(meter("Memory", mem.used_pct, `${fmtMb(mem.used_mb)} / ${fmtMb(mem.total_mb)}`));
+    for (const d of disks) {
+      metersWrap.append(meter(`Disk ${d.mount}`, d.used_pct, `${d.used || "?"} / ${d.size || "?"}`));
+    }
+    if (gpu) {
+      metersWrap.append(meter("GPU", gpu.utilization_pct, `${fmtNum(gpu.utilization_pct)}%`));
+      if (gpu.memory_total_mb) {
+        metersWrap.append(
+          meter("VRAM", gpu.memory_pct, `${fmtMb(gpu.memory_used_mb)} / ${fmtMb(gpu.memory_total_mb)}`),
+        );
+      }
+      if (gpu.temperature_c != null) {
+        const power = gpu.power_w != null ? ` · ${fmtNum(gpu.power_w, 0)}W${gpu.power_limit_w ? "/" + fmtNum(gpu.power_limit_w, 0) + "W" : ""}` : "";
+        metersWrap.append(meter("GPU temp", gpu.temperature_c, `${fmtNum(gpu.temperature_c, 0)}°C${power}`));
+      }
+    } else {
+      metersWrap.append(meter("GPU", null, "not available", { na: true }));
+    }
+    const load = cpu.load || {};
+    const load1 = Number(load["1"]);
+    const loadPct = Number.isFinite(load1) && cpu.logical_threads ? (load1 / cpu.logical_threads) * 100 : null;
+    metersWrap.append(meter("Load average", loadPct, `${fmtNum(load["1"], 2)} / ${fmtNum(load["5"], 2)} / ${fmtNum(load["15"], 2)}`));
+    metersWrap.append(meter("Uptime", 100, fmtUptime(sys.uptime_seconds), { soft: true }));
+
+    $("sysUpdated").textContent = body.time ? "· updated " + new Date(body.time).toLocaleTimeString() : "";
+    const bits = [
+      sys.hostname,
+      sys.os,
+      sys.kernel ? `kernel ${sys.kernel}` : null,
+      sys.virtualization && sys.virtualization !== "bare-metal" ? sys.virtualization : null,
+    ].filter(Boolean);
+    $("sysMeta").textContent = bits.join(" · ");
+  }
+
+  async function loadSystem() {
+    const { status, body } = await api("/api/system");
+    if (status !== 200) {
+      $("sysMeta").textContent = body.error || "system stats unavailable";
+      return;
+    }
+    renderSystem(body);
+  }
+
+  function startSystemPolling() {
+    stopSystemPolling();
+    if (document.hidden) return;
+    loadSystem();
+    sysTimer = setInterval(loadSystem, SYS_REFRESH_MS);
+  }
+  function stopSystemPolling() {
+    if (sysTimer) {
+      clearInterval(sysTimer);
+      sysTimer = null;
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopSystemPolling();
+    } else if (!$("dash").classList.contains("hide")) {
+      startSystemPolling();
+    }
+  });
 
   async function loadDeploy() {
     const { body } = await api("/api/deploy");
@@ -146,6 +296,7 @@
     $("loginCard").classList.add("hide");
     $("dash").classList.remove("hide");
     await Promise.all([loadHealth(), loadDeploy(), loadForm(), loadSubmissions()]);
+    startSystemPolling();
   }
 
   /* ---------------- Application form editor ---------------- */
@@ -357,7 +508,7 @@
   };
   $("oauthBtn").onclick = () => { location.href = "/auth/login"; };
   $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
-  $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); loadForm(); loadSubmissions(); };
+  $("refreshBtn").onclick = () => { loadHealth(); loadDeploy(); loadForm(); loadSubmissions(); startSystemPolling(); };
   $("logoutBtn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
   document.querySelectorAll("[data-restart]").forEach((btn) => {
     btn.onclick = async () => {

@@ -31,6 +31,13 @@ export function decodeEntities(input) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'")
     .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (m, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 16));
+      } catch {
+        return m;
+      }
+    })
     .replace(/&#(\d+);/g, (m, n) => {
       try {
         return String.fromCodePoint(Number(n));
@@ -180,6 +187,8 @@ function queryTerms(query) {
   return [...new Set(String(query || "").toLowerCase().match(/[a-z0-9]{3,}/g) || [])].filter((t) => !STOPWORDS.has(t));
 }
 
+const BOILERPLATE = /(learn more|read more|sign up|subscribe|cookie|all rights reserved|terms of (use|service)|privacy policy|click here|follow us|share this|advertisement)/i;
+
 export function pickFacts(query, pages, { maxFacts = 9, maxChars = 3000 } = {}) {
   const terms = queryTerms(query);
   const scored = [];
@@ -189,6 +198,7 @@ export function pickFacts(query, pages, { maxFacts = 9, maxChars = 3000 } = {}) 
       const key = sentence.toLowerCase().slice(0, 70);
       if (seen.has(key)) continue;
       seen.add(key);
+      if (BOILERPLATE.test(sentence)) continue;
       const lower = sentence.toLowerCase();
       let score = 0;
       for (const term of terms) if (lower.includes(term)) score += 1;

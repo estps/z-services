@@ -40,6 +40,20 @@ const STYLE_SEEDS = [
   "futurist: dark background, neon accent, angular section markers",
 ];
 
+/* Palette families: the generator is asked to start from one family per deck
+   and adapt its hues to the topic, so consecutive decks do not look alike.
+   (8 families >= the "5+ palette families" requirement.) */
+const THEME_FAMILIES = [
+  "midnight gallery: near-black ground, warm brass accent, ivory text, graphite muted",
+  "arctic paper: off-white ground, deep teal accent, slate text, one signal red",
+  "terracotta studio: cream ground, burnt clay accent, espresso text, olive secondary",
+  "neon futurist: deep indigo ground, electric cyan accent, pale mint text, magenta secondary",
+  "royal editorial: ink-navy ground, gold accent, porcelain text, oxblood secondary",
+  "sage field: bone ground, forest accent, bark text, ochre secondary",
+  "coral pop: white ground, coral accent, midnight text, sky secondary",
+  "monochrome luxe: jet ground, silver text, one single accent hue chosen from the topic",
+];
+
 const hex = (value, fallback) => {
   const cleaned = String(value || "").trim().replace(/^#/, "");
   return HEX.test(cleaned) ? cleaned.toUpperCase() : fallback;
@@ -257,6 +271,7 @@ export function normalizeDeck(parsed, maxPages = 20) {
     .map(normalizeSlide)
     .slice(0, Math.max(1, Math.min(Number(maxPages) || 20, 40)));
   if (!slides.length) throw new Error("AI returned an empty deck; please try again");
+  repairAdjacent(slides);
   return {
     title: s(source.title, 140) || "Untitled presentation",
     subtitle: s(source.subtitle, 200),
@@ -309,21 +324,51 @@ export async function recordLayoutSequence(stateDir, sequence) {
   await fs.writeFile(seqFile(stateDir), JSON.stringify(rest.slice(0, 40), null, 2)).catch(() => {});
 }
 
-/* Guarantee the new deck does not repeat a recently used layout sequence:
-   if it matches one exactly, flip one interior bullets/section slide. */
-export function ensureUniqueSequence(slides, recent) {
-  const current = slides.map((slide) => slide.layout);
-  const head = current.join(">");
-  if (!recent.some((entry) => entry && entry.seq === head)) return slides;
+/* The model occasionally emits two dividers (or two bullet slides) in a row.
+   Flip the later one; cover/closing are never touched. */
+function repairAdjacent(slides) {
   for (let i = 1; i < slides.length - 1; i += 1) {
-    if (slides[i].layout === "bullets") {
-      slides[i] = { ...slides[i], layout: "section", bullets: undefined };
-      break;
-    }
+    if (slides[i].layout !== slides[i - 1].layout) continue;
     if (slides[i].layout === "section") {
-      slides[i] = { ...slides[i], layout: "bullets", bullets: slides[i].bullets && slides[i].bullets.length ? slides[i].bullets : [slides[i].title] };
-      break;
+      slides[i] = {
+        ...slides[i],
+        layout: "bullets",
+        bullets: slides[i].bullets && slides[i].bullets.length ? slides[i].bullets : [slides[i].title],
+      };
+    } else if (slides[i].layout === "bullets") {
+      slides[i] = { ...slides[i], layout: "section", bullets: undefined };
     }
+  }
+  return slides;
+}
+
+/* Guarantee the new deck does not repeat a recently used layout sequence:
+   if it matches one exactly, flip interior bullets/section slides until the
+   sequence is new (bounded attempts, first/last slides stay cover/closing).
+   Also removes adjacent duplicate section/bullets slides. */
+export function ensureUniqueSequence(slides, recent) {
+  if (!Array.isArray(slides) || slides.length < 3) return slides;
+  const used = new Set(
+    (Array.isArray(recent) ? recent : []).map((entry) => (entry && typeof entry === "object" ? entry.seq : entry)).filter(Boolean)
+  );
+  const head = () => slides.map((slide) => slide.layout).join(">");
+  const interior = slides.length - 2;
+  const flip = (i) => {
+    const slide = slides[i];
+    if (slide.layout === "bullets") {
+      slides[i] = { ...slide, layout: "section", bullets: undefined };
+    } else if (slide.layout === "section") {
+      slides[i] = {
+        ...slide,
+        layout: "bullets",
+        bullets: slide.bullets && slide.bullets.length ? slide.bullets : [slide.title],
+      };
+    }
+  };
+  repairAdjacent(slides);
+  for (let attempt = 0; used.size && attempt < interior * 2 && used.has(head()); attempt += 1) {
+    flip(1 + (attempt % interior));
+    repairAdjacent(slides);
   }
   return slides;
 }
@@ -333,6 +378,7 @@ export function ensureUniqueSequence(slides, recent) {
 export function buildPrompt({ details, pages, invitees, research, avoidSequences } = {}) {
   const target = Math.max(1, Number(pages) || 12);
   const seed = STYLE_SEEDS[crypto.randomInt(STYLE_SEEDS.length)];
+  const family = THEME_FAMILIES[crypto.randomInt(THEME_FAMILIES.length)];
   const audience = invitees && invitees.length ? `Intended audience/invitees: ${invitees.join(", ")}.` : "";
   const facts = research && research.facts && research.facts.length
     ? `\nWeb research notes (real facts gathered from public pages; fold in only what is relevant, never mention the research):\n${research.facts.map((f) => `- ${f}`).join("\n")}`
@@ -358,6 +404,7 @@ export function buildPrompt({ details, pages, invitees, research, avoidSequences
     `Per-layout fields: bullets -> bullets[3-5] (max 16 words each); stats -> 2-4 {value,label} (value is a short number/percent, label explains it); timeline -> 3-7 {when,what}; compare / comparison -> {"left":{"title","points":[3-5]},"right":{"title","points":[3-5]}}; quote -> {"text","attribution"}; image/split -> image {"query":"specific 2-6 word photo search"} plus bullets[2-4] for split.`,
     `Every slide has a short "notes" string with 1-2 sentences of speaker guidance.`,
     `Theme: derive from the topic's mood, make it distinctive, palette order is EXACTLY [background, accent, text, muted, secondary accent, surface] as 6-digit hex WITHOUT "#"; background must be dark or light enough that "text" is clearly readable; "accent" must pop on the background.`,
+    `Palette family to start from (adapt its hues to the topic instead of copying it blindly; stay in this family's temperature and contrast): ${family}.`,
     `Content: specific and factual, no filler; lean on the brief.`,
     `Creative direction for THIS deck (apply consistently): ${seed}.`,
     `Make the layout rhythm feel designed for this specific deck - not a generic template.`,

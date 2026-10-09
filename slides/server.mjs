@@ -38,6 +38,13 @@ const OAUTH_CONSENT_URL = `${PORTAL_ORIGIN}/oauth/consent`;
 const OAUTH_REDIRECT = process.env.OAUTH_REDIRECT || `${SELF_ORIGIN}/auth/callback`;
 const CLIENT_ID = process.env.OAUTH_CLIENT_ID || "z-slides";
 
+/* Only Z Chat family sites may frame Z Slides (the Z Chat hub embeds it
+   full-viewport). CSP host wildcards match subdomains only, so the apex and
+   www are listed explicitly next to https://*.z-chat.men, which also covers
+   the rotating d-<hash>.z-chat.men tunnel hostnames. */
+const FRAME_ANCESTORS =
+  "frame-ancestors 'self' https://z-chat.men https://www.z-chat.men https://*.z-chat.men";
+
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://dwstivxwyqdogzgxnidm.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "";
 
@@ -55,12 +62,30 @@ const CANVA_AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize";
 const CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
 const CANVA_IMPORTS_URL = "https://api.canva.com/rest/v1/url-imports";
 const CANVA_GENERATIONS_URL = "https://api.canva.com/rest/v1/generations";
+const CANVA_AUTOFILLS_URL = "https://api.canva.com/rest/v1/autofills";
+const CANVA_BRAND_TEMPLATES_URL = "https://api.canva.com/rest/v1/brand-templates";
 const CANVA_CAPS_URL = "https://api.canva.com/rest/v1/users/me/capabilities";
 const CANVA_ASSET_UPLOADS_URL = "https://api.canva.com/rest/v1/asset-uploads";
-/* Extra scopes (asset:write, brandtemplate:meta:read, brandtemplate:content:read)
-   can be requested via CANVA_SCOPE in the env file once enabled on the Canva
-   integration; existing user tokens must reconnect to receive them. */
+/* Canva Connect limits, verified against this integration on 2026-10-08:
+   - GET /users/me/capabilities returns [autofill, background_removal,
+     brand_template, export_png_transparency, resize, team_restricted_app];
+     design_generation is NOT available, so /v1/generations cannot be used.
+   - PPTX URL-import with design:content:write works and is the default path
+     (both connected accounts produced editable Canva designs).
+   - Brand-template autofill needs brandtemplate:meta:read (list) and
+     brandtemplate:content:read (dataset); tokens connected with the default
+     CANVA_SCOPE below return 403 missing_scope for both, so autofill only
+     runs when CANVA_BRAND_TEMPLATE_ID is set AND the dataset is readable
+     (extend CANVA_SCOPE + reconnect on the Canva integration to enable it).
+   - Asset upload (mirroring deck images into the user's Canva library) needs
+     asset:write, which is also outside the default scope; the upload pass is
+     still attempted on every send and skipped gracefully on 403.
+   - Export endpoints (e.g. PNG transparency) need design:content:read; not
+     used here because the server renders its own PPTX.
+   Extra scopes can be requested via CANVA_SCOPE in the env file once enabled
+   on the Canva integration; existing user tokens must reconnect to get them. */
 const CANVA_SCOPE = process.env.CANVA_SCOPE || "design:content:write profile:read";
+const CANVA_BRAND_TEMPLATE_ID = process.env.CANVA_BRAND_TEMPLATE_ID || "";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
@@ -130,6 +155,10 @@ function parseCookies(req) {
 function send(req, res, status, headers, body) {
   const payload = body == null ? null : Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8");
   const out = { "X-Content-Type-Options": "nosniff", ...headers };
+  /* frame-ancestors only affects documents, so it is safe on every response
+     and guarantees no HTML path (static, auth failure, redirect) can be
+     framed by anyone outside the allow-list. */
+  if (out["Content-Security-Policy"] === undefined) out["Content-Security-Policy"] = FRAME_ANCESTORS;
   if (payload) out["Content-Length"] = payload.length;
   res.writeHead(status, out);
   if (req.method === "HEAD" || !payload) res.end();
@@ -160,8 +189,13 @@ function normalizeUser(source) {
   return { id: source.id || source.sub || "", email, name, avatar };
 }
 
+/* Sessions only carry `appr` when they were minted through the approve
+   endpoint after the account's application_status was verified; anything else
+   falls through to the login flow, so pending accounts cannot keep using a
+   stale cookie. */
 function currentUser(req) {
-  return verify(parseCookies(req).zs_session, "session");
+  const user = verify(parseCookies(req).zs_session, "session");
+  return user && user.appr === true ? user : null;
 }
 
 /* ---------------- storage ---------------- */
@@ -365,21 +399,33 @@ async function handleApprove(req, res) {
     /* invalid_token below */
   }
   if (!user || !user.id) return send(req, res, 401, json, JSON.stringify({ error: "invalid_token" }));
+  /* Banned/timeout in Z Chat carry over, and only approved applications may
+     mint a Z Slides session - a pending Google signup is rejected here. */
+  let profile = null;
   try {
     const profileResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=banned,timeout_until`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=banned,timeout_until,application_status`,
       { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${match[1]}` } }
     );
-    if (profileResponse.ok) {
-      const rows = await profileResponse.json();
-      const profile = Array.isArray(rows) ? rows[0] : null;
-      if (profile && profile.banned) return send(req, res, 403, json, JSON.stringify({ error: "banned" }));
-      if (profile && profile.timeout_until && Date.parse(profile.timeout_until) > Date.now()) {
-        return send(req, res, 403, json, JSON.stringify({ error: "timed_out", until: profile.timeout_until }));
-      }
+    if (!profileResponse.ok) {
+      return send(req, res, 503, json, JSON.stringify({ error: "profile_unavailable" }));
     }
+    const rows = await profileResponse.json();
+    profile = Array.isArray(rows) ? rows[0] : null;
   } catch {
-    /* fail open */
+    return send(req, res, 503, json, JSON.stringify({ error: "profile_unavailable" }));
+  }
+  if (!profile) {
+    /* The signup trigger always creates a profile row; a missing row means the
+       account never completed signup, so treat it like a pending application. */
+    return send(req, res, 403, json, JSON.stringify({ error: "pending_application" }));
+  }
+  if (profile.banned) return send(req, res, 403, json, JSON.stringify({ error: "banned" }));
+  if (profile.timeout_until && Date.parse(profile.timeout_until) > Date.now()) {
+    return send(req, res, 403, json, JSON.stringify({ error: "timed_out", until: profile.timeout_until }));
+  }
+  if (profile.application_status !== "approved") {
+    return send(req, res, 403, json, JSON.stringify({ error: "pending_application" }));
   }
   const raw = await readBody(req);
   let body = null;
@@ -394,7 +440,7 @@ async function handleApprove(req, res) {
   const challenge = String(body.code_challenge || "");
   if (redirectUri !== OAUTH_REDIRECT) return send(req, res, 400, json, JSON.stringify({ error: "bad_redirect_uri" }));
   if (!challenge || challenge.length > 200) return send(req, res, 400, json, JSON.stringify({ error: "bad_challenge" }));
-  const code = sign({ sub: user.id, email: user.email, name: user.name, avatar: user.avatar, challenge }, "code", CODE_TTL_MS);
+  const code = sign({ sub: user.id, email: user.email, name: user.name, avatar: user.avatar, challenge, appr: true }, "code", CODE_TTL_MS);
   const redirect = redirectUri + "?code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
   send(req, res, 200, json, JSON.stringify({ redirect }));
 }
@@ -421,8 +467,16 @@ function handleCallback(req, res, url) {
   if (!data.challenge || data.challenge !== challenge) {
     return authFail(req, res, 403, "Could not verify the sign-in request. Please try again.");
   }
+  if (data.appr !== true) {
+    return authFail(
+      req,
+      res,
+      403,
+      "Your Z Chat application is still being reviewed. You can sign in once an admin approves it."
+    );
+  }
   const user = { id: data.sub, email: data.email, name: data.name, avatar: data.avatar };
-  const session = sign(user, "session", SESSION_MAX_AGE * 1000);
+  const session = sign({ ...user, appr: true }, "session", SESSION_MAX_AGE * 1000);
   send(req, res, 302, {
     Location: "/",
     "Set-Cookie": [
@@ -505,6 +559,7 @@ async function uploadDeckImagesToCanva(deck, uid) {
   if (!images.length) return null;
   const root = path.resolve(IMAGES_DIR);
   let uploaded = 0;
+  const assets = [];
   for (const url of images) {
     const target = path.resolve(root, url.slice("/img/".length));
     if (!target.startsWith(root + path.sep)) continue;
@@ -530,7 +585,7 @@ async function uploadDeckImagesToCanva(deck, uid) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       console.error("[zslides] canva asset upload skipped:", response.status, data.code || "", data.message || "");
-      return uploaded ? { uploaded } : { uploaded: 0, error: data.code || `http_${response.status}` };
+      return uploaded ? { uploaded, assets } : { uploaded: 0, error: data.code || `http_${response.status}` };
     }
     const jobId = data.job?.id;
     let assetId = data.job?.asset?.id || null;
@@ -542,9 +597,12 @@ async function uploadDeckImagesToCanva(deck, uid) {
       if (status.job?.status === "success") assetId = status.job.asset?.id || null;
       else if (status.job?.status === "failed") break;
     }
-    if (assetId) uploaded += 1;
+    if (assetId) {
+      uploaded += 1;
+      assets.push({ name: path.basename(url), assetId });
+    }
   }
-  return { uploaded };
+  return { uploaded, assets };
 }
 
 async function startCanvaImport(deck, uid) {
@@ -569,35 +627,131 @@ async function startCanvaImport(deck, uid) {
   return { kind: "import", jobId: data.job?.id || null, status: data.job?.status || "in_progress" };
 }
 
-function hasGenerationCapability(payload) {
-  const list = payload && Array.isArray(payload.capabilities) ? payload.capabilities : [];
-  return list.some((entry) => {
-    if (typeof entry === "string") return entry === "design_generation";
-    if (entry && typeof entry === "object") {
-      const name = entry.name || entry.type || entry.capability || entry.id;
-      if (name !== "design_generation") return false;
-      return entry.available !== false;
-    }
-    return false;
-  });
+const canvaCapabilityCache = new Map();
+
+/* Read /users/me/capabilities once per token (10 min cache). Returns a Set of
+   capability names, or null when Canva cannot be reached. */
+async function canvaCapabilities(token) {
+  const key = token.slice(-32);
+  const hit = canvaCapabilityCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.set;
+  try {
+    const response = await fetch(CANVA_CAPS_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => null);
+    const set = new Set(
+      (payload && Array.isArray(payload.capabilities) ? payload.capabilities : [])
+        .map((entry) => {
+          if (typeof entry === "string") return entry;
+          if (entry && typeof entry === "object") return entry.name || entry.type || entry.capability || entry.id || null;
+          return null;
+        })
+        .filter(Boolean)
+    );
+    canvaCapabilityCache.set(key, { at: Date.now(), set });
+    if (canvaCapabilityCache.size > 50) canvaCapabilityCache.delete(canvaCapabilityCache.keys().next().value);
+    return set;
+  } catch {
+    return null;
+  }
 }
 
-/* Prefer Canva's native design generation (the user's Canva AI builds the
-   presentation from our outline, fully native + editable). Falls back to
-   importing our PPTX export when the capability or credits aren't available. */
+/* Flatten the deck into an ordered pool of strings for generic text fields. */
+function canvaTextPool(deck) {
+  const pool = [];
+  const push = (value) => {
+    const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    if (text && !pool.includes(text)) pool.push(text.slice(0, 2000));
+  };
+  push(deck.title);
+  push(deck.subtitle);
+  for (const slide of Array.isArray(deck.slides) ? deck.slides : []) {
+    push(slide.title);
+    push(slide.subtitle);
+    if (Array.isArray(slide.bullets)) slide.bullets.forEach(push);
+    if (Array.isArray(slide.stats)) slide.stats.forEach((stat) => push(`${stat.value || ""} ${stat.label || ""}`.trim()));
+    if (slide.quote && slide.quote.text) push(`"${slide.quote.text}"${slide.quote.attribution ? ` - ${slide.quote.attribution}` : ""}`);
+    if (Array.isArray(slide.timeline)) slide.timeline.forEach((entry) => push(`${entry.when || ""}: ${entry.what || ""}`.trim()));
+    if (slide.compare) {
+      push([slide.compare.left && slide.compare.left.title, (slide.compare.left && slide.compare.left.points || []).join(", ")].filter(Boolean).join(": "));
+      push([slide.compare.right && slide.compare.right.title, (slide.compare.right && slide.compare.right.points || []).join(", ")].filter(Boolean).join(": "));
+    }
+  }
+  return pool;
+}
+
+/* Brand-template autofill: only usable when the token can read brand template
+   metadata + dataset (extra scopes). Uses CANVA_BRAND_TEMPLATE_ID when set,
+   otherwise the first brand template in the account. Any failure returns null
+   so the caller falls back to the PPTX URL import. */
+async function tryCanvaAutofill(deck, uid, token, capabilities) {
+  if (!capabilities || !capabilities.has("autofill")) return null;
+  let templateId = CANVA_BRAND_TEMPLATE_ID;
+  try {
+    if (!templateId) {
+      const list = await fetch(`${CANVA_BRAND_TEMPLATES_URL}?limit=20`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!list.ok) return null;
+      const payload = await list.json().catch(() => null);
+      const templates = payload && Array.isArray(payload.templates) ? payload.templates : [];
+      templateId = (templates[0] && templates[0].id) || "";
+    }
+    if (!templateId) return null;
+    const datasetResponse = await fetch(`${CANVA_BRAND_TEMPLATES_URL}/${encodeURIComponent(templateId)}/dataset`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!datasetResponse.ok) return null;
+    const datasetPayload = await datasetResponse.json().catch(() => null);
+    const dataset = datasetPayload && datasetPayload.dataset && typeof datasetPayload.dataset === "object" ? datasetPayload.dataset : {};
+    const pool = canvaTextPool(deck);
+    const fields = {};
+    let textIndex = 0;
+    for (const [key, field] of Object.entries(dataset)) {
+      if (field && field.type === "text") {
+        fields[key] = { type: "text", text: pool.length ? pool[textIndex % pool.length] : deck.title };
+        textIndex += 1;
+      }
+      /* image/chart/sheet fields stay untouched: image assets need asset:write
+         uploads, chart/sheet data has no reliable deck mapping. */
+    }
+    if (!Object.keys(fields).length) return null;
+    const response = await fetch(CANVA_AUTOFILLS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(12000),
+      body: JSON.stringify({
+        type: "create_from_brand_template",
+        brand_template_id: templateId,
+        title: String(deck.title || "Presentation").slice(0, 255),
+        data: fields,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error("[zslides] canva autofill start failed:", response.status, JSON.stringify(data).slice(0, 200));
+      return null;
+    }
+    return { kind: "autofill", jobId: data.job?.id || null, status: data.job?.status || "in_progress", templateId };
+  } catch (err) {
+    console.error("[zslides] canva autofill skipped:", err.message);
+    return null;
+  }
+}
+
+/* Delivery order: native design generation (unavailable on this integration),
+   then brand-template autofill (when scopes/template allow), then importing
+   our themed PPTX export. */
 async function startCanvaDesign(deck, uid) {
   const token = await canvaAccessToken(uid);
   if (!token) return null;
-  let generationAvailable = false;
-  try {
-    const capsResponse = await fetch(CANVA_CAPS_URL, { headers: { Authorization: `Bearer ${token}` } });
-    if (capsResponse.ok) {
-      generationAvailable = hasGenerationCapability(await capsResponse.json().catch(() => null));
-    }
-  } catch {
-    /* fall back to import */
-  }
-  if (generationAvailable) {
+  const capabilities = await canvaCapabilities(token);
+  if (capabilities && capabilities.has("design_generation")) {
     const sections = deck.slides.map((slide) => {
       const bullets = Array.isArray(slide.bullets) ? slide.bullets : [];
       const description = (bullets.join(". ") || slide.title || "Slide").slice(0, 2000);
@@ -626,6 +780,10 @@ async function startCanvaDesign(deck, uid) {
     } catch (err) {
       console.error("[zslides] canva native generation failed:", err);
     }
+  }
+  if (capabilities && capabilities.has("autofill")) {
+    const autofilled = await tryCanvaAutofill(deck, uid, token, capabilities);
+    if (autofilled) return autofilled;
   }
   return startCanvaImport(deck, uid);
 }
@@ -1219,10 +1377,20 @@ async function handleGenerate(req, res, user) {
 
 async function handleCanvaStatusApi(req, res, user) {
   const tokens = await getCanvaTokens(user.id);
+  const connected = Boolean(tokens && tokens.refresh_token);
+  let capabilities = null;
+  if (connected) {
+    const token = await canvaAccessToken(user.id).catch(() => null);
+    if (token) {
+      const set = await canvaCapabilities(token).catch(() => null);
+      if (set) capabilities = [...set].sort();
+    }
+  }
   send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
     JSON.stringify({
       configured: Boolean(CANVA_CLIENT_ID && CANVA_CLIENT_SECRET),
-      connected: Boolean(tokens && tokens.refresh_token),
+      connected,
+      capabilities,
     }));
 }
 
@@ -1269,14 +1437,17 @@ async function handleDeckCanva(req, res, user, id) {
       const token = await canvaAccessToken(user.id);
       if (token) {
         const isGeneration = deck.canva.kind === "generation";
+        const isAutofill = deck.canva.kind === "autofill";
         const pollUrl = isGeneration
           ? `${CANVA_GENERATIONS_URL}/${deck.canva.jobId}`
-          : `${CANVA_IMPORTS_URL}/${deck.canva.jobId}`;
+          : isAutofill
+            ? `${CANVA_AUTOFILLS_URL}/${deck.canva.jobId}`
+            : `${CANVA_IMPORTS_URL}/${deck.canva.jobId}`;
         const response = await fetch(pollUrl, { headers: { Authorization: `Bearer ${token}` } });
         const data = await response.json().catch(() => ({}));
         const job = data.job || {};
         if (job.status === "success") {
-          const design = isGeneration
+          const design = isGeneration || isAutofill
             ? (job.result && job.result.design) || null
             : (job.result && job.result.designs && job.result.designs[0]) || null;
           deck.canva.status = "success";

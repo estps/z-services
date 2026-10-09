@@ -84,6 +84,12 @@ class ZChatApp : Form
             await view.EnsureCoreWebView2Async(env);
             view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             view.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            // Tag the embedded browser so the site can hide the "Download for Windows" button.
+            string ua = view.CoreWebView2.Settings.UserAgent;
+            if (!string.IsNullOrEmpty(ua) && ua.IndexOf("ZChatDesktop", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                view.CoreWebView2.Settings.UserAgent = ua + " ZChatDesktop/1.0";
+            }
             view.CoreWebView2.Navigate("https://z-chat.men");
         }
         catch (Exception ex)

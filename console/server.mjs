@@ -3,6 +3,7 @@
 // quick restart. No service-role key anywhere: RLS + own token only.
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
@@ -349,6 +350,207 @@ function handleAuthCallback(req, res) {
   res.end();
 }
 
+/* ---------------- Black box specs & live utilization (GET /api/system) ---------------- */
+
+function readText(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function cpuSpec() {
+  const text = readText("/proc/cpuinfo");
+  const model = (
+    (text.match(/^model name\s*:\s*(.+)$/m) || [])[1] ||
+    os.cpus()[0]?.model ||
+    "unknown"
+  ).trim();
+  const logical = os.cpus().length || null;
+  const physIds = [...text.matchAll(/^physical id\s*:\s*(\d+)/gm)].map((m) => m[1]);
+  const coreIds = [...text.matchAll(/^core id\s*:\s*(\d+)/gm)].map((m) => m[1]);
+  let physical = null;
+  if (physIds.length && physIds.length === coreIds.length) {
+    physical = new Set(physIds.map((p, i) => `${p}:${coreIds[i]}`)).size;
+  }
+  if (!physical) {
+    const cores = Number((text.match(/^cpu cores\s*:\s*(\d+)$/m) || [])[1]);
+    if (Number.isFinite(cores) && cores > 0) {
+      physical = cores * (Math.max(1, new Set(physIds).size));
+    }
+  }
+  return { model, physical_cores: physical, logical_threads: logical };
+}
+
+function cpuTimes() {
+  const line = readText("/proc/stat").split("\n").find((l) => l.startsWith("cpu "));
+  if (!line) return null;
+  const v = line.trim().split(/\s+/).slice(1).map(Number);
+  const total = v.reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+  const idle = (v[3] || 0) + (v[4] || 0);
+  return { total, idle };
+}
+
+async function cpuUtilization() {
+  const a = cpuTimes();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const b = cpuTimes();
+  if (!a || !b || b.total <= a.total) return null;
+  const pct = (1 - (b.idle - a.idle) / (b.total - a.total)) * 100;
+  return Math.round(Math.max(0, Math.min(100, pct)) * 10) / 10;
+}
+
+function memInfo() {
+  const kv = {};
+  for (const line of readText("/proc/meminfo").split("\n")) {
+    const m = /^(\w+):\s+(\d+)/.exec(line);
+    if (m) kv[m[1]] = Number(m[2]);
+  }
+  const total = kv.MemTotal || 0;
+  const free = kv.MemFree || 0;
+  const available = kv.MemAvailable || free;
+  const used = Math.max(0, total - available);
+  const mb = (kB) => Math.round(kB / 1024);
+  return {
+    total_mb: mb(total),
+    used_mb: mb(used),
+    free_mb: mb(free),
+    available_mb: mb(available),
+    used_pct: total ? Math.round((used / total) * 1000) / 10 : null,
+  };
+}
+
+function humanKb(kb) {
+  if (!Number.isFinite(kb)) return null;
+  const gb = kb / (1024 * 1024);
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(kb / 1024)} MB`;
+}
+
+async function diskUsage() {
+  const r = await run("df", ["-kP", "/", "/srv"], { timeout: 4000 });
+  if (!r.out) return [];
+  const rows = [];
+  for (const line of r.out.split("\n").slice(1)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 6) continue;
+    const [filesystem, size, used, avail, capacity, ...mountParts] = parts;
+    rows.push({
+      mount: mountParts.join(" "),
+      filesystem,
+      size: humanKb(Number(size)),
+      used: humanKb(Number(used)),
+      free: humanKb(Number(avail)),
+      used_pct: Number(String(capacity).replace("%", "")) || 0,
+    });
+  }
+  return rows;
+}
+
+async function gpuInfo() {
+  const r = await run(
+    "nvidia-smi",
+    [
+      "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+      "--format=csv,noheader,nounits",
+    ],
+    { timeout: 4000 },
+  );
+  if (!r.ok && !r.out) {
+    return { available: false, gpus: [], error: r.err || "nvidia-smi unavailable" };
+  }
+  const num = (s) => {
+    const v = parseFloat(s);
+    return Number.isFinite(v) ? v : null;
+  };
+  const gpus = [];
+  for (const line of r.out.split("\n")) {
+    if (!line.trim()) continue;
+    const p = line.split(",").map((s) => s.trim());
+    const usedMb = num(p[2]);
+    const totalMb = num(p[3]);
+    gpus.push({
+      name: p[0] || "GPU",
+      utilization_pct: num(p[1]),
+      memory_used_mb: usedMb,
+      memory_total_mb: totalMb,
+      memory_pct: usedMb != null && totalMb ? Math.round((usedMb / totalMb) * 1000) / 10 : null,
+      temperature_c: num(p[4]),
+      power_w: num(p[5]),
+      power_limit_w: num(p[6]),
+    });
+  }
+  return { available: gpus.length > 0, gpus };
+}
+
+async function topProcesses() {
+  const r = await run("ps", ["-eo", "pid,comm,pcpu,pmem", "--sort=-pcpu", "--no-headers"], {
+    timeout: 4000,
+  });
+  if (!r.ok && !r.out) return [];
+  const rows = [];
+  for (const line of r.out.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 4) continue;
+    const pid = Number(parts[0]);
+    const name = parts.slice(1, parts.length - 2).join(" ");
+    // Skip the probes themselves so they don't top their own list.
+    if (name === "nvidia-smi" || pid === process.pid) continue;
+    const memPct = parseFloat(parts[parts.length - 1]);
+    const cpuPct = parseFloat(parts[parts.length - 2]);
+    rows.push({
+      pid: Number.isFinite(pid) ? pid : null,
+      name,
+      cpu_pct: Number.isFinite(cpuPct) ? cpuPct : 0,
+      mem_pct: Number.isFinite(memPct) ? memPct : 0,
+    });
+    if (rows.length >= 5) break;
+  }
+  return rows;
+}
+
+function osPrettyName() {
+  const text = readText("/etc/os-release");
+  const m = /^PRETTY_NAME="?([^"\n]+)"?/m.exec(text);
+  return m ? m[1].trim() : `${os.type()} ${os.release()}`;
+}
+
+function virtualization() {
+  if (fs.existsSync("/.dockerenv")) return "docker";
+  const cgroup = readText("/proc/self/cgroup");
+  if (/docker|containerd|kubepods/.test(cgroup)) return "docker";
+  if (/lxc/.test(cgroup)) return "lxc";
+  if (/^flags\s*:.*\bhypervisor\b/m.test(readText("/proc/cpuinfo"))) return "vm";
+  return "bare-metal";
+}
+
+async function systemStats() {
+  const settle = (p) => p.then((v) => v).catch(() => null);
+  const [utilization, disk, gpu, top] = await Promise.all([
+    settle(cpuUtilization()),
+    settle(diskUsage()).then((v) => v || []),
+    settle(gpuInfo()).then((v) => v || { available: false, gpus: [] }),
+    settle(topProcesses()).then((v) => v || []),
+  ]);
+  const spec = cpuSpec();
+  const [l1, l5, l15] = os.loadavg().map((v) => Math.round(v * 100) / 100);
+  return {
+    time: new Date().toISOString(),
+    cpu: { ...spec, utilization_pct: utilization, load: { "1": l1, "5": l5, "15": l15 } },
+    memory: memInfo(),
+    disk,
+    gpu,
+    system: {
+      hostname: os.hostname(),
+      os: osPrettyName(),
+      kernel: os.release(),
+      uptime_seconds: Math.round(os.uptime()),
+      virtualization: virtualization(),
+    },
+    top,
+  };
+}
+
 async function health() {
   const services = [];
   for (const unit of UNITS) {
@@ -419,6 +621,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/api/health") {
       return json(res, 200, await health());
+    }
+    if (req.method === "GET" && p === "/api/system") {
+      const started = Date.now();
+      const stats = await systemStats();
+      stats.took_ms = Date.now() - started;
+      return json(res, 200, stats);
     }
     if (req.method === "GET" && p === "/api/deploy") {
       let lines = [];
