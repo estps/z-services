@@ -23,8 +23,16 @@ const config: CapacitorConfig = {
     allowNavigation: [
       "z-chat.men",
       "*.z-chat.men",
+      // Supabase auth (the /auth/v1/authorize hop) must stay inside the app,
+      // otherwise the OAuth flow escapes to the system browser.
+      "*.supabase.co",
       "accounts.google.com",
+      "*.google.com",
+      "*.googleusercontent.com",
+      "apis.google.com",
       "login.microsoftonline.com",
+      "*.microsoftonline.com",
+      "*.live.com",
     ],
   },
   ios: {
