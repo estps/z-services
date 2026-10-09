@@ -1053,6 +1053,7 @@ async function streamGeneration(prep, onProgress) {
   let buffer = "";
   let raw = "";
   let usage = null;
+  let finishReason = null;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   for (;;) {
@@ -1073,6 +1074,8 @@ async function streamGeneration(prep, onProgress) {
         continue;
       }
       if (event.usage) usage = event.usage;
+      const choice = event.choices && event.choices[0];
+      if (choice && choice.finish_reason) finishReason = choice.finish_reason;
       const delta = (event.choices && event.choices[0] && event.choices[0].delta && event.choices[0].delta.content) || "";
       if (delta) {
         raw += delta;
@@ -1080,7 +1083,10 @@ async function streamGeneration(prep, onProgress) {
       }
     }
   }
-  return { raw, usage };
+  if (finishReason === "length") {
+    console.warn("[zslides] AI output hit the token cap and was truncated - salvaging completed slides");
+  }
+  return { raw, usage, finishReason };
 }
 
 function salvageDeck(raw, maxPages) {
