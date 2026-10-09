@@ -12,7 +12,7 @@
 
   var DESIGN_W = 1280;
   var DESIGN_H = 720;
-  var LAYOUT_NAMES = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "closing"];
+  var LAYOUT_NAMES = ["cover", "section", "bullets", "split", "image", "quote", "stats", "timeline", "comparison", "compose", "hero", "band", "sidebar", "panels", "bigNumber", "closing"];
   var FALLBACK_PALETTE = ["1E1B16", "C9A227", "FFFFFF", "CFC6AE"];
 
   /* ------------------------------------------------------------- color utils */
@@ -783,8 +783,8 @@
     decorFor(cv, ctx);
     var body = div("dc-body dc-compose");
     var blocks = (s.blocks && s.blocks.length) ? s.blocks : [];
-    var hasTitleBlock = blocks.some(function (b) { return b.type === "title"; });
-    if (s.title && !hasTitleBlock) body.appendChild(titleBlock("dc-heading", s.title, { h: "h2" }));
+    var hasHeadingBlock = blocks.some(function (b) { return b.type === "title" || b.type === "kicker"; });
+    if (s.title && !hasHeadingBlock) body.appendChild(titleBlock("dc-heading", s.title, { h: "h2" }));
     var grid = div("dc-grid");
     blocks.forEach(function (b) {
       var el = null;
@@ -828,6 +828,126 @@
       grid.appendChild(el);
     });
     body.appendChild(grid);
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.hero = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-hero");
+    if (s.subtitle) body.appendChild(div("dc-kicker", asText(s.subtitle).toUpperCase()));
+    body.appendChild(titleBlock("dc-hero-title", s.title || ctx.deckTitle || "", { h: "h1" }));
+    var pts = (s.bullets || []).slice(0, 4);
+    if (pts.length) {
+      var row = div("dc-chips");
+      pts.forEach(function (p) { row.appendChild(span("dc-chip", p)); });
+      body.appendChild(row);
+    }
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.band = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-band");
+    var head = div("dc-band-head");
+    if (s.subtitle) head.appendChild(div("dc-kicker", asText(s.subtitle).toUpperCase()));
+    head.appendChild(titleBlock("dc-band-title", s.title || "", { h: "h2" }));
+    body.appendChild(head);
+    var content = div("dc-band-content");
+    var pts = (s.bullets || []).slice(0, 6);
+    if (pts.length) {
+      var ul = tag("ul", "dc-band-list");
+      pts.forEach(function (p) { ul.appendChild(tag("li", null, p)); });
+      content.appendChild(ul);
+    }
+    var st = s.stats || [];
+    if (st.length) {
+      var g = div("dc-band-stats");
+      st.slice(0, 3).forEach(function (x) {
+        var c = div("dc-band-stat");
+        c.appendChild(div("dc-band-stat-v", x.value));
+        c.appendChild(div("dc-band-stat-l", x.label));
+        g.appendChild(c);
+      });
+      content.appendChild(g);
+    }
+    body.appendChild(content);
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.sidebar = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-sidebar");
+    var side = div("dc-side-panel");
+    if (s.subtitle) side.appendChild(div("dc-kicker", asText(s.subtitle).toUpperCase()));
+    side.appendChild(titleBlock("dc-side-title", s.title || "", { h: "h2" }));
+    side.appendChild(div("dc-rule dc-rule--short"));
+    var main = div("dc-side-main");
+    var pts = (s.bullets || []).slice(0, 6);
+    if (pts.length) {
+      var ul = tag("ul", "dc-side-list");
+      pts.forEach(function (p) { ul.appendChild(tag("li", null, p)); });
+      main.appendChild(ul);
+    }
+    var st = s.stats || [];
+    if (st.length) {
+      var g = div("dc-side-stats");
+      st.slice(0, 2).forEach(function (x) {
+        var c = div("dc-side-stat");
+        c.appendChild(div("dc-side-stat-v", x.value));
+        c.appendChild(div("dc-side-stat-l", x.label));
+        g.appendChild(c);
+      });
+      main.appendChild(g);
+    }
+    body.appendChild(side);
+    body.appendChild(main);
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.panels = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-panels");
+    body.appendChild(titleBlock("dc-panels-title", s.title || "", { h: "h2" }));
+    var grid = div("dc-panels-grid");
+    var cmp = s.compare || {};
+    var sides = [cmp.left || {}, cmp.right || {}];
+    var hasPoints = sides.some(function (x) { return x && x.points && x.points.length; });
+    if (!hasPoints && (s.bullets || []).length) {
+      var half = Math.ceil(s.bullets.length / 2);
+      sides = [
+        { title: "", points: s.bullets.slice(0, half) },
+        { title: "", points: s.bullets.slice(half) },
+      ];
+    }
+    sides.forEach(function (side, i) {
+      var p = div("dc-panel" + (i ? " dc-panel--alt" : ""));
+      if (side.title) p.appendChild(div("dc-panel-title", side.title));
+      var ul = tag("ul", "dc-panel-list");
+      (side.points || []).forEach(function (pt) { ul.appendChild(tag("li", null, pt)); });
+      p.appendChild(ul);
+      grid.appendChild(p);
+    });
+    body.appendChild(grid);
+    cv.appendChild(body);
+    chrome(cv, ctx);
+  };
+
+  LAYOUTS.bigNumber = function (cv, s, ctx) {
+    decorFor(cv, ctx);
+    var body = div("dc-body dc-bignum");
+    var stat = (s.stats && s.stats[0]) || { value: s.title || "", label: s.subtitle || "" };
+    body.appendChild(div("dc-bignum-value", stat.value));
+    if (stat.label) body.appendChild(div("dc-bignum-label", stat.label));
+    var pts = (s.bullets || []).slice(0, 3);
+    if (pts.length) {
+      var row = div("dc-chips");
+      pts.forEach(function (p) { row.appendChild(span("dc-chip", p)); });
+      body.appendChild(row);
+    }
     cv.appendChild(body);
     chrome(cv, ctx);
   };
