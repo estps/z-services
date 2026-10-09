@@ -10,7 +10,7 @@ STATE_TOOL=/srv/zchat/quicktunnels/state_tool.py
 enabled_for() { python3 -c "import json; print('1' if json.load(open('$STATE'))['$1']['enabled'] else '')" 2>/dev/null || true; }
 url_for() { python3 -c "import json; print(json.load(open('$STATE'))['$1'].get('url',''))" 2>/dev/null || true; }
 
-for site in zchat games slides; do
+for site in zchat; do
   [ "$(enabled_for "$site")" = "1" ] || continue
   before="$(url_for "$site")"
   echo "[rotate] restarting $site (current: ${before:-none})"

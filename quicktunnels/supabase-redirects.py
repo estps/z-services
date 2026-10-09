@@ -59,7 +59,7 @@ def main():
     quick = []
     try:
         state = json.load(open(STATE_FILE, encoding="utf-8"))
-        for site in ("zchat", "games", "slides"):
+        for site in ("zchat",):
             url = ((state.get(site) or {}).get("url") or "").rstrip("/")
             if url.startswith("https://"):
                 quick.append(url)
