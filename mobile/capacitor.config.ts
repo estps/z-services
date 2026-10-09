@@ -18,6 +18,18 @@ const config: CapacitorConfig = {
   server: {
     url: "https://z-chat.men",
     cleartext: false,
+    // Keep every Z service inside the app instead of bouncing to Safari.
+    // Plan gating is enforced server-side, so the shell just needs to reach them.
+    allowNavigation: [
+      "z-chat.men",
+      "*.z-chat.men",
+      "accounts.google.com",
+      "login.microsoftonline.com",
+    ],
+  },
+  ios: {
+    // Inline or full-screen video is required so call streams play in the WebView.
+    limitsNavigationsToAppBoundDomains: false,
   },
 };
 
