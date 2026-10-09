@@ -1,0 +1,23 @@
+[Unit]
+Description=Z Sparx API (personal Sparx Maths integration via school Microsoft login)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=zchat
+Group=zchat
+WorkingDirectory=/srv/zsparx
+Environment=HOME=/srv/zsparx
+Environment=PORT=8823
+ExecStart=/srv/zgames/.venv/bin/python /srv/zsparx/zsparx.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
