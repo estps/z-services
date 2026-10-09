@@ -1,0 +1,264 @@
+name: iOS IPA (Capacitor)
+
+# Builds the Capacitor iOS shell in mobile/ into an .ipa on a macOS runner.
+#
+# - Without Apple secrets: still succeeds and uploads an UNSIGNED .ipa
+#   (build proof / re-signable, but NOT installable on a device as-is).
+# - With secrets: imports the distribution certificate + provisioning
+#   profile and exports a signed App Store .ipa ready for TestFlight.
+#
+# Signed-build secrets:
+#   APPLE_CERTIFICATE_BASE64          (Apple Distribution .p12, base64)
+#   APPLE_CERTIFICATE_PASSWORD        (password of that .p12)
+#   APPLE_PROVISIONING_PROFILE_BASE64 (App Store .mobileprovision, base64)
+#   APPLE_TEAM_ID                     (10-char Apple team ID)
+#   KEYCHAIN_PASSWORD                 (any throwaway keychain password)
+#
+# Optional TestFlight upload secrets (App Store Connect API key):
+#   APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_API_KEY_BASE64
+#
+# NOTE: this workflow is intentionally untested until it runs on a real
+# macOS runner - secrets cannot be exercised locally.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/ios-ipa.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Add iOS platform (generated on this runner)
+        run: |
+          if [ ! -d ios ]; then
+            npx cap add ios
+          fi
+
+      - name: Configure iOS permissions (calls + notifications)
+        run: |
+          set -euo pipefail
+          PLIST="ios/App/App/Info.plist"
+          set_key() { /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST"; }
+          set_key NSCameraUsageDescription "Z Chat uses your camera for video calls."
+          set_key NSMicrophoneUsageDescription "Z Chat uses your microphone for voice and video calls."
+          set_key NSPhotoLibraryUsageDescription "Z Chat lets you share photos from your library."
+          set_key NSPhotoLibraryAddUsageDescription "Z Chat saves photos you receive."
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$PLIST" 2>/dev/null || true
+          for i in audio remote-notification; do
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string $i" "$PLIST" 2>/dev/null || true
+          done
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$PLIST"
+          echo "--- Info.plist permission keys ---"
+          /usr/libexec/PlistBuddy -c "Print" "$PLIST" | grep -E "UsageDescription|UIBackgroundModes|ITSApp" || true
+
+      - name: Sync web assets and native dependencies
+        run: npx cap sync ios
+
+      - name: Detect signing secrets
+        id: signing
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ] \
+             && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] \
+             && [ -n "$APPLE_PROVISIONING_PROFILE_BASE64" ] \
+             && [ -n "$APPLE_TEAM_ID" ] \
+             && [ -n "$KEYCHAIN_PASSWORD" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets found: building a signed App Store .ipa."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Signing secrets missing - building an UNSIGNED .ipa (not installable on a device as-is)."
+          fi
+
+      - name: Detect TestFlight upload secrets
+        id: testflight
+        working-directory: .
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          if [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER_ID" ] && [ -n "$APPLE_API_KEY_BASE64" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ------------------------------------------------------------------
+      # Signed path
+      # ------------------------------------------------------------------
+      - name: Import certificate and provisioning profile
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k build.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security list-keychains -d user -s build.keychain login.keychain-db
+
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$PROFILE_PLIST")
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+      - name: Archive and export signed .ipa
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: mobile/ios/App
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
+          ARCHIVE_PATH="$RUNNER_TEMP/ZChat.xcarchive"
+          IPA_DIR="$RUNNER_TEMP/ipa"
+
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:men.zchat.app string $PROFILE_NAME" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :destination string export" "$EXPORT_PLIST"
+
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            archive
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$EXPORT_PLIST" \
+            -exportPath "$IPA_DIR"
+
+      # ------------------------------------------------------------------
+      # Unsigned fallback (no secrets configured)
+      # ------------------------------------------------------------------
+      - name: Archive (unsigned)
+        if: steps.signing.outputs.signed != 'true'
+        working-directory: mobile/ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/ZChat.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive
+
+      - name: Package unsigned .ipa
+        if: steps.signing.outputs.signed != 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          APP_DIR="$RUNNER_TEMP/ZChat.xcarchive/Products/Applications"
+          APP_PATH="$APP_DIR/App.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -n 1)
+          fi
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "::error::No .app found in the archive - build failed."
+            exit 1
+          fi
+          mkdir -p "$IPA_DIR/Payload"
+          cp -R "$APP_PATH" "$IPA_DIR/Payload/"
+          (cd "$IPA_DIR" && zip -qry ZChat-unsigned.ipa Payload)
+          ls -la "$IPA_DIR"
+
+      # ------------------------------------------------------------------
+      # Outputs
+      # ------------------------------------------------------------------
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZChat-ios-ipa
+          path: ${{ runner.temp }}/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload to TestFlight (optional)
+        if: steps.testflight.outputs.enabled == 'true' && steps.signing.outputs.signed == 'true'
+        working-directory: mobile/ios/App
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+          UPLOAD_PLIST="$RUNNER_TEMP/ExportOptions-upload.plist"
+
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$UPLOAD_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$UPLOAD_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$UPLOAD_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$UPLOAD_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:men.zchat.app string $PROFILE_NAME" "$UPLOAD_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$UPLOAD_PLIST"
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/ZChat.xcarchive" \
+            -exportOptionsPlist "$UPLOAD_PLIST" \
+            -exportPath "$RUNNER_TEMP/upload" \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$APPLE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_API_ISSUER_ID"
