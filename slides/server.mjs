@@ -327,9 +327,9 @@ async function listDecks(uid) {
 
 /* ---------------- DeepSeek ---------------- */
 
-async function generateDeck(details, pages, invitees, research, avoidSequences) {
+async function generateDeck(details, pages, invitees, research, avoidSequences, detail) {
   if (!DEEPSEEK_API_KEY) throw new Error("server is missing its AI key");
-  const prompt = buildPrompt({ details, pages, invitees, research, avoidSequences });
+  const prompt = buildPrompt({ details, pages, invitees, research, avoidSequences, detail });
   const response = await fetch(DEEPSEEK_URL, {
     method: "POST",
     headers: {
@@ -927,6 +927,7 @@ async function prepareGeneration(user, body) {
     .map((entry) => String(entry).trim())
     .filter(Boolean)
     .slice(0, 20);
+  const detail = Math.max(1, Math.min(5, Math.round(Number(body.detail) || 3)));
   if (details.length < 10) throw new GenerationError(400, "details_too_short", "Tell the AI a bit more about the presentation.");
   if (details.length > 2000) throw new GenerationError(400, "details_too_long", "Keep the details under 2000 characters.");
   const plan = admin ? "max" : await fetchPlan(user.id);
@@ -937,7 +938,7 @@ async function prepareGeneration(user, body) {
       402,
       "quota",
       plan === "free"
-        ? "AI presentations are a Pro feature - get Pro (10 decks a month) or Max (unlimited) in Z Chat."
+        ? `You have used all ${allowance} free decks this month - get Pro (10 a month) or Max (unlimited) in Z Chat.`
         : `You have used all ${allowance} presentations this month. Upgrade to Max for unlimited decks.`,
     );
   }
@@ -949,7 +950,7 @@ async function prepareGeneration(user, body) {
   if (!canvaTokens || !canvaTokens.refresh_token) {
     throw new GenerationError(403, "canva_required", "Connect Canva first (bottom of the sidebar) - presentations are created in your Canva account.");
   }
-  return { details, pages, invitees };
+  return { details, pages, invitees, detail };
 }
 
 /* Pull completed slide objects out of a partially streamed JSON document. */
