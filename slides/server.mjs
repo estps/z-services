@@ -89,6 +89,12 @@ const CANVA_BRAND_TEMPLATE_ID = process.env.CANVA_BRAND_TEMPLATE_ID || "";
 const EXPORT_TTL_MS = 30 * 60 * 1000;
 
 const FREE_DECKS = Number(process.env.FREE_DECKS || 3);
+/* Plan-based monthly allowance: Free gets FREE_PLAN_DECKS, Pro gets PRO_DECKS,
+   Max is unlimited (admins unlimited). Plans are read from Z Chat via the
+   secret-keyed slides_plan RPC (the publishable key cannot read profiles). */
+const SLIDES_QUOTA_KEY = process.env.SLIDES_QUOTA_KEY || "";
+const FREE_PLAN_DECKS = Number(process.env.FREE_PLAN_DECKS || 0);
+const PRO_DECKS = Number(process.env.PRO_DECKS || 10);
 const ADMIN_IDS = new Set(
   String(process.env.ADMIN_IDS || "")
     .split(",")
@@ -223,16 +229,52 @@ const monthKey = () => new Date().toISOString().slice(0, 7);
 
 async function getUsage(uid) {
   const all = await readJson(usageFile(), {});
-  return all[uid] || { total: 0 };
+  const entry = all[uid] || {};
+  const month = monthKey();
+  if (entry.month !== month) return { month, used: 0, total: Number(entry.total) || 0 };
+  return { month, used: Number(entry.used) || 0, total: Number(entry.total) || 0 };
 }
 
 async function bumpUsage(uid) {
   const all = await readJson(usageFile(), {});
-  const entry = all[uid] || { total: 0 };
-  entry.total += 1;
-  all[uid] = entry;
+  const entry = all[uid] || {};
+  const month = monthKey();
+  const used = entry.month === month ? Number(entry.used) || 0 : 0;
+  all[uid] = { month, used: used + 1, total: (Number(entry.total) || 0) + 1 };
   await writeJson(usageFile(), all);
-  return entry;
+  return all[uid];
+}
+
+/* Which plan does this Z Chat user have? Read through a secret-keyed RPC the
+   publishable key is allowed to call. On any failure fall back to "pro" so a
+   transient Supabase hiccup never locks paying users out of generating. */
+async function fetchPlan(uid) {
+  if (!SLIDES_QUOTA_KEY) return "pro";
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/slides_plan`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ _key: SLIDES_QUOTA_KEY, _user: uid }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return "pro";
+    const data = await response.json();
+    const plan = data && typeof data.plan === "string" ? data.plan : "free";
+    return plan === "max" || plan === "pro" || plan === "free" ? plan : "free";
+  } catch {
+    return "pro";
+  }
+}
+
+/* Monthly deck allowance by plan; null means unlimited. */
+function allowanceFor(plan) {
+  if (plan === "max") return null;
+  if (plan === "pro") return PRO_DECKS;
+  return FREE_PLAN_DECKS;
 }
 
 async function getBudget() {
@@ -887,9 +929,17 @@ async function prepareGeneration(user, body) {
     .slice(0, 20);
   if (details.length < 10) throw new GenerationError(400, "details_too_short", "Tell the AI a bit more about the presentation.");
   if (details.length > 2000) throw new GenerationError(400, "details_too_long", "Keep the details under 2000 characters.");
+  const plan = admin ? "max" : await fetchPlan(user.id);
+  const allowance = admin ? null : allowanceFor(plan);
   const usage = await getUsage(user.id);
-  if (!ADMIN_IDS.has(user.id) && usage.total >= FREE_DECKS) {
-    throw new GenerationError(402, "quota", `You have used all ${FREE_DECKS} free presentations.`);
+  if (allowance !== null && usage.used >= allowance) {
+    throw new GenerationError(
+      402,
+      "quota",
+      plan === "free"
+        ? "AI presentations are a Pro feature - get Pro (10 decks a month) or Max (unlimited) in Z Chat."
+        : `You have used all ${allowance} presentations this month. Upgrade to Max for unlimited decks.`,
+    );
   }
   const budget = await getBudget();
   if (budget.usd >= MONTHLY_BUDGET_USD) {
@@ -1577,14 +1627,23 @@ async function route(req, res) {
     return send(req, res, 302, { Location: "/auth/login", "Set-Cookie": `zs_session=; ${COOKIE_OPTS}; Max-Age=0`, "Cache-Control": "no-store" }, "");
   }
   if (pathname === "/api/me") {
-    const usage = await getUsage(user.id);
-    const budget = await getBudget();
     const admin = ADMIN_IDS.has(user.id);
+    const plan = admin ? "max" : await fetchPlan(user.id);
+    const allowance = admin ? null : allowanceFor(plan);
+    const usage = await getUsage(user.id);
+    const left = allowance === null ? null : Math.max(0, allowance - usage.used);
     return send(req, res, 200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
       JSON.stringify({
         user: { id: user.id, name: user.name, email: user.email, avatar: user.avatar },
-        usage: { used: usage.total, free: FREE_DECKS, left: admin ? 9999 : Math.max(0, FREE_DECKS - usage.total) },
-        unlimited: admin,
+        plan,
+        usage: {
+          used: usage.used,
+          limit: allowance,
+          left: left === null ? 9999 : left,
+          month: usage.month,
+        },
+        usageLeft: left === null ? 9999 : left,
+        unlimited: allowance === null,
         maxPages: admin ? ADMIN_MAX_PAGES : MAX_PAGES,
         minPages: MIN_PAGES,
         suggestedPages: [MIN_PAGES, Math.min(16, admin ? ADMIN_MAX_PAGES : MAX_PAGES)],

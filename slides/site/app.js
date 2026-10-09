@@ -50,7 +50,7 @@
       return;
     }
     q.appendChild(el("span", "quota-num", String(usage.left)));
-    q.appendChild(el("span", "quota-label", usage.left === 1 ? "free deck left" : "free decks left"));
+    q.appendChild(el("span", "quota-label", usage.left === 1 ? "deck left this month" : "decks left this month"));
   }
 
   /* ---------------------------------------------------------------- rendering */
@@ -232,7 +232,13 @@
     if (Number(pages.value) > maxPages) pages.value = String(maxPages);
     $("pagesOut").textContent = pages.value + (pages.value === "1" ? " page" : " pages");
     if (state.me && !state.me.unlimited && state.me.usageLeft <= 0) {
-      $("formError").textContent = "You have used all of your free presentations.";
+      var plan = state.me.plan || "free";
+      $("formError").textContent =
+        plan === "free"
+          ? "AI presentations are a Pro feature - get Pro (10 a month) or Max (unlimited) in Z Chat."
+          : "You have used all " +
+            ((state.me.usage && state.me.usage.limit) || 0) +
+            " presentations this month. Upgrade to Max for unlimited.";
       $("formError").hidden = false;
     }
     dialog.showModal();
