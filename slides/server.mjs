@@ -105,7 +105,7 @@ const ADMIN_IDS = new Set(
 const MAX_PAGES = Number(process.env.MAX_PAGES || 16);
 const ADMIN_MAX_PAGES = Number(process.env.ADMIN_MAX_PAGES || 20);
 const MIN_PAGES = Number(process.env.MIN_PAGES || 8);
-const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 7000);
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 8192);
 const IMAGES_DIR = path.join(STATE_DIR, "images");
 const MONTHLY_BUDGET_USD = Number(process.env.MONTHLY_BUDGET_USD || 15);
 /* deepseek-chat pricing, USD per 1M tokens (approx) */
@@ -354,26 +354,7 @@ async function generateDeck(details, pages, invitees, research, avoidSequences, 
   const data = await response.json();
   const usage = data.usage || {};
   const content = data.choices?.[0]?.message?.content || "";
-  let parsed = null;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    const match = content.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        parsed = JSON.parse(match[0]);
-      } catch {
-        parsed = null;
-      }
-    }
-  }
-  let generated = null;
-  try {
-    generated = normalizeDeck(parsed, pages);
-  } catch {
-    generated = null;
-  }
-  if (!generated) throw new Error("AI returned an unexpected format; please try again");
+  const generated = parseGenerated(content, pages);
   let usageTotal = usage;
   if (generated.slides.length < pages) {
     try {
@@ -1102,6 +1083,20 @@ async function streamGeneration(prep, onProgress) {
   return { raw, usage };
 }
 
+function salvageDeck(raw, maxPages) {
+  try {
+    const meta = extractMeta(raw) || {};
+    const slides = extractSlides(raw);
+    if (!Array.isArray(slides) || !slides.length) return null;
+    return normalizeDeck(
+      { title: meta.title, subtitle: meta.subtitle, theme: meta.theme, slides },
+      maxPages,
+    );
+  } catch {
+    return null;
+  }
+}
+
 function parseGenerated(raw, maxPages = MAX_PAGES) {
   let parsed = null;
   try {
@@ -1116,8 +1111,22 @@ function parseGenerated(raw, maxPages = MAX_PAGES) {
       }
     }
   }
-  if (!parsed) throw new Error("AI returned an unexpected format; please try again");
-  return normalizeDeck(parsed, maxPages);
+  if (parsed) {
+    try {
+      return normalizeDeck(parsed, maxPages);
+    } catch {
+      /* fall through to salvage */
+    }
+  }
+  /* The model sometimes gets truncated (finish_reason=length) or emits a
+     near-miss JSON. Rebuild a deck from whatever slides completed. */
+  const salvaged = salvageDeck(raw, maxPages);
+  if (salvaged) {
+    console.error("[zslides] salvaged a truncated/partial deck with", salvaged.slides.length, "slides");
+    return salvaged;
+  }
+  console.error("[zslides] unparseable AI output (first 900 chars):\n" + String(raw).slice(0, 900));
+  throw new Error("AI returned an unexpected format; please try again");
 }
 
 function mergeUsage(a, b) {
