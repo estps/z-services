@@ -171,7 +171,9 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$EXPORT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :destination string export" "$EXPORT_PLIST"
 
-          xcodebuild -workspace App.xcworkspace \
+          TARGET_ARGS=(-project App.xcodeproj)
+          if [ -d App.xcworkspace ]; then TARGET_ARGS=(-workspace App.xcworkspace); fi
+          xcodebuild "${TARGET_ARGS[@]}" \
             -scheme App \
             -configuration Release \
             -destination "generic/platform=iOS" \
@@ -194,7 +196,9 @@ jobs:
         working-directory: mobile/ios/App
         run: |
           set -euo pipefail
-          xcodebuild -workspace App.xcworkspace \
+          TARGET_ARGS=(-project App.xcodeproj)
+          if [ -d App.xcworkspace ]; then TARGET_ARGS=(-workspace App.xcworkspace); fi
+          xcodebuild "${TARGET_ARGS[@]}" \
             -scheme App \
             -configuration Release \
             -destination "generic/platform=iOS" \
