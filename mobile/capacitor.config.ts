@@ -38,6 +38,8 @@ const config: CapacitorConfig = {
   ios: {
     // Inline or full-screen video is required so call streams play in the WebView.
     limitsNavigationsToAppBoundDomains: false,
+    // Swipe from the left edge to go back (works with the app's history).
+    allowsBackForwardNavigationGestures: true,
   },
   android: {
     allowMixedContent: false,
