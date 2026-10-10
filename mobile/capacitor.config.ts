@@ -42,6 +42,10 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: false,
   },
+  plugins: {
+    // Stop the whole WebView shifting up when the keyboard opens.
+    Keyboard: { resize: "native", style: "dark" },
+  },
 };
 
 export default config;
