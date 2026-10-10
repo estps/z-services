@@ -12,6 +12,9 @@ import type { CapacitorConfig } from "@capacitor/cli";
 const config: CapacitorConfig = {
   appId: "men.zchat.app",
   appName: "Z Chat",
+  // Matches the app's dark background so there is no white flash on launch,
+  // rotation, or when the keyboard opens.
+  backgroundColor: "#0b0d12",
   // Placeholder web assets only. Never displayed because `server.url` takes
   // over on launch; it must still exist for `cap sync` / `cap add ios`.
   webDir: "www",
@@ -47,6 +50,15 @@ const config: CapacitorConfig = {
   plugins: {
     // Stop the whole WebView shifting up when the keyboard opens.
     Keyboard: { resize: "native", style: "dark" },
+    // Branded splash, then get out of the way.
+    SplashScreen: {
+      backgroundColor: "#0b0d12",
+      showSpinner: false,
+      launchShowDuration: 600,
+      launchAutoHide: true,
+    },
+    // Light status bar text to match the dark app.
+    StatusBar: { style: "LIGHT", backgroundColor: "#0b0d12", overlaysWebView: false },
   },
 };
 
