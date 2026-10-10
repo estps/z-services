@@ -19,7 +19,7 @@
     "directories": { "output": "dist", "buildResources": "build" },
     "files": ["main.js", "package.json"],
     "mac": {
-      "target": ["dmg"],
+      "target": [{ "target": "dmg", "arch": ["universal"] }],
       "category": "public.app-category.social-networking",
       "darkModeSupport": true,
       "identity": null,
