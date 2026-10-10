@@ -1,0 +1,50 @@
+name: macOS DMG (Electron)
+
+# Builds the Electron macOS app in desktop-mac/ into an (unsigned) .dmg on a
+# macOS runner. Signing/notarization would need an Apple Developer account.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "desktop-mac/**"
+      - ".github/workflows/macos-dmg.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-dmg:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: desktop-mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-mac/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build .dmg (unsigned)
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZChat-macos-dmg
+          path: desktop-mac/dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14

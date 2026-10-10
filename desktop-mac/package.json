@@ -1,0 +1,36 @@
+{
+  "name": "zchat-mac",
+  "version": "1.0.0",
+  "description": "Z Chat for macOS - the same chats, calls and services in a native window.",
+  "main": "main.js",
+  "author": "Z Chat",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "men.zchat.desktop",
+    "productName": "Z Chat",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "package.json"],
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.social-networking",
+      "darkModeSupport": true,
+      "identity": null,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Z Chat uses your camera for video calls.",
+        "NSMicrophoneUsageDescription": "Z Chat uses your microphone for voice and video calls."
+      }
+    },
+    "dmg": {
+      "title": "Z Chat",
+      "backgroundColor": "#0b0d12"
+    }
+  }
+}
