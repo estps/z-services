@@ -25,6 +25,7 @@ import struct
 import threading
 import time
 import traceback
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -51,6 +52,43 @@ RPC_XP = "/maths/sparx.maths.xp.v1.XP/GetCurrentUserXPState"
 RPC_USERINFO = "/sparx.auth.userinfo.v1.UserInfoService/GetUserInfo"
 RPC_NOTIFICATIONS = "/sparx.notifications.notifications.v1.Notifications/ListNotificationsAndDisplayData"
 RPC_PACKAGES = "/maths/sparx.packageactivity.v1.Packages/ListStudentPackages"
+
+# DeepSeek powers POST /ask - "answer this for me".
+DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_SYSTEM = os.environ.get(
+    "DEEPSEEK_SYSTEM",
+    "You are a helpful assistant. Answer the user's question directly and correctly. "
+    "For maths or science show the working and steps, then the final answer.",
+)
+
+
+def ask_deepseek(question, context=None, system=None):
+    if not DEEPSEEK_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY is not configured")
+    messages = [{"role": "system", "content": system or DEEPSEEK_SYSTEM}]
+    user = question if not context else "Context:\n%s\n\nQuestion:\n%s" % (context, question)
+    messages.append({"role": "user", "content": user})
+    body = json.dumps(
+        {
+            "model": DEEPSEEK_MODEL,
+            "messages": messages,
+            "max_tokens": int(os.environ.get("DEEPSEEK_MAX_TOKENS", "2048")),
+            "temperature": 0.3,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        DEEPSEEK_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + DEEPSEEK_KEY},
+    )
+    with urllib.request.urlopen(request, timeout=90) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError("deepseek returned no answer: %s" % json.dumps(data)[:200])
+    return choices[0].get("message", {}).get("content", "")
 
 LOGIN_JS = """
 const done = arguments[0];
@@ -465,6 +503,14 @@ class Handler(BaseHTTPRequestHandler):
             token = ""
         return self.headers.get("x-zsparx-token", "") == token and token != ""
 
+    def _read_body(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        raw = self.rfile.read(length) if length else b""
+        return raw.decode("utf-8", "replace")
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -520,11 +566,18 @@ class Handler(BaseHTTPRequestHandler):
                 body = base64.b64decode((query.get("b") or [""])[0] or "")
                 messages = with_session(lambda: rpc(path, body))
                 self._send(200, {"messages": messages})
+            elif path == "/ask":
+                question = (query.get("q") or [""])[0].strip()
+                if not question:
+                    self._send(400, {"error": "add ?q=..."})
+                else:
+                    self._send(200, {"answer": ask_deepseek(question), "model": DEEPSEEK_MODEL})
             elif path == "/":
                 self._send(200, {
                     "service": "zsparx",
                     "endpoints": ["/health", "/session", "/xp", "/userinfo", "/homework",
-                                  "/notifications", "/raw?p=/rpc/path", "POST /login"],
+                                  "/notifications", "/raw?p=/rpc/path", "/ask?q=...",
+                                  "POST /ask", "POST /login"],
                 })
             else:
                 self._send(404, {"error": "not found"})
@@ -536,19 +589,33 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path or "/"
         if path == "/sparx" or path.startswith("/sparx/"):
             path = path[len("/sparx"):] or "/"
-        if path != "/login":
-            self._send(404, {"error": "not found"})
-            return
         if not self._authorized():
             self._send(401, {"error": "missing or wrong x-zsparx-token"})
             return
         try:
-            with driver_lock:
-                drop_driver()
-                ok = ensure_logged_in(force=True)
-            self._send(200 if ok else 502, {"logged_in": ok})
+            if path == "/login":
+                with driver_lock:
+                    drop_driver()
+                    ok = ensure_logged_in(force=True)
+                self._send(200 if ok else 502, {"logged_in": ok})
+                return
+            if path == "/ask":
+                raw = self._read_body()
+                try:
+                    body = json.loads(raw) if raw else {}
+                except Exception:
+                    self._send(400, {"error": "bad json"})
+                    return
+                question = str(body.get("question") or body.get("prompt") or body.get("q") or "").strip()
+                if not question:
+                    self._send(400, {"error": "add question"})
+                    return
+                answer = ask_deepseek(question, body.get("context"), body.get("system"))
+                self._send(200, {"answer": answer, "model": DEEPSEEK_MODEL})
+                return
+            self._send(404, {"error": "not found"})
         except Exception as error:
-            self._send(502, {"error": str(error)})
+            self._send(502, {"error": str(error), "trace": traceback.format_exc()[-600:]})
 
 
 def main():
