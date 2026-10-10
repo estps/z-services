@@ -1,6 +1,8 @@
-// Z Chat tray app - a WebView2 window around https://z-chat.men.
-// Clicking X (or minimizing) hides it to the system tray so calls keep
-// ringing in the background. Tray menu: Open / Quit. Single instance.
+// Z Chat desktop app - a WebView2 window around https://z-chat.men.
+// Closing the window keeps Z Chat running in the background (calls keep
+// ringing). There is NO tray icon: to bring the window back, launch "Z Chat"
+// again from the Start menu / Windows search and the running instance is
+// restored to the front.
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -14,7 +16,7 @@ using Microsoft.Web.WebView2.WinForms;
 class ZChatApp : Form
 {
     static Mutex mutex;
-    NotifyIcon tray;
+    static EventWaitHandle showEvent;
     WebView2 view;
     bool reallyQuit = false;
 
@@ -25,10 +27,13 @@ class ZChatApp : Form
         mutex = new Mutex(true, "ZChatSingleInstanceMutex", out created);
         if (!created)
         {
-            MessageBox.Show("Z Chat is already running (look in the system tray).", "Z Chat",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Already running: ask the existing window to come back, then leave.
+            try { EventWaitHandle.OpenExisting("ZChatShowEvent").Set(); }
+            catch { }
             return;
         }
+        showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "ZChatShowEvent");
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new ZChatApp());
@@ -61,18 +66,19 @@ class ZChatApp : Form
         Controls.Add(view);
         InitWebViewAsync(dir);
 
-        tray = new NotifyIcon();
-        tray.Icon = Icon;
-        tray.Text = "Z Chat - running in tray, calls will ring";
-        tray.Visible = true;
-        tray.ContextMenuStrip = BuildMenu();
-        tray.DoubleClick += delegate { Restore(); };
-
         FormClosing += OnClosing;
-        Resize += delegate
+
+        // A second launch signals this event; bring ourselves back to the front.
+        var watcher = new Thread(new ThreadStart(delegate
         {
-            if (WindowState == FormWindowState.Minimized) HideToTray();
-        };
+            while (true)
+            {
+                showEvent.WaitOne();
+                try { BeginInvoke(new Action(Restore)); } catch { }
+            }
+        }));
+        watcher.IsBackground = true;
+        watcher.Start();
     }
 
     async void InitWebViewAsync(string dir)
@@ -103,45 +109,23 @@ class ZChatApp : Form
 
     void OnClosing(object sender, FormClosingEventArgs e)
     {
+        // Closing the window just hides it - Z Chat keeps running in the
+        // background. Launch it again from the Start menu to bring it back.
         if (!reallyQuit && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
-            HideToTray();
+            Hide();
+            ShowInTaskbar = false;
         }
-    }
-
-    void HideToTray()
-    {
-        Hide();
-        ShowInTaskbar = false;
-        try
-        {
-            tray.ShowBalloonTip(2500, "Z Chat", "Still running in the tray - calls will keep ringing.",
-                ToolTipIcon.Info);
-        }
-        catch { }
     }
 
     void Restore()
     {
-        Show();
         ShowInTaskbar = true;
+        Show();
         WindowState = FormWindowState.Normal;
         Activate();
-    }
-
-    ContextMenuStrip BuildMenu()
-    {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Open Z Chat", null, delegate { Restore(); });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Quit", null, delegate
-        {
-            reallyQuit = true;
-            tray.Visible = false;
-            Application.Exit();
-        });
-        return menu;
+        BringToFront();
     }
 
     void EnsureStartMenuShortcut(string icoPath)
@@ -158,7 +142,7 @@ class ZChatApp : Form
             lnk.TargetPath = exe;
             lnk.WorkingDirectory = Path.GetDirectoryName(exe);
             lnk.IconLocation = (File.Exists(icoPath) ? icoPath : exe) + ",0";
-            lnk.Description = "Z Chat - calls ring in the background";
+            lnk.Description = "Z Chat - closing keeps it running; open from here to bring it back";
             lnk.Save();
         }
         catch { }
