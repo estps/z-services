@@ -80,6 +80,35 @@ jobs:
           echo "--- Info.plist permission keys ---"
           /usr/libexec/PlistBuddy -c "Print" "$PLIST" | grep -E "UsageDescription|UIBackgroundModes|ITSApp" || true
 
+      - name: Configure iOS background audio (AVAudioSession)
+        run: |
+          python3 - <<'PY'
+          p = "ios/App/App/AppDelegate.swift"
+          s = open(p, encoding="utf-8").read()
+          if "import AVFoundation" not in s:
+              if "import Capacitor" in s:
+                  s = s.replace("import Capacitor", "import Capacitor\nimport AVFoundation", 1)
+              else:
+                  s = "import AVFoundation\n" + s
+          if "AVAudioSession.sharedInstance()" not in s:
+              setup = (
+                  "        // Z Chat: keep call audio alive when the app is backgrounded.\n"
+                  "        do {\n"
+                  "            let session = AVAudioSession.sharedInstance()\n"
+                  "            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker, .allowBluetoothA2DP])\n"
+                  "            try session.setActive(true)\n"
+                  "        } catch { print(\"AVAudioSession error: \\(error)\") }\n\n"
+              )
+              idx = s.find("didFinishLaunchingWithOptions")
+              ridx = s.find("return true", idx) if idx != -1 else -1
+              if ridx != -1:
+                  s = s[:ridx] + setup + s[ridx:]
+              else:
+                  print("WARNING: didFinishLaunchingWithOptions not found; audio session not injected")
+          open(p, "w", encoding="utf-8").write(s)
+          print("AppDelegate audio session:", "AVAudioSession" in s)
+          PY
+
       - name: Sync web assets and native dependencies
         run: npx cap sync ios
 
