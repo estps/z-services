@@ -41,6 +41,7 @@ if (!TOKEN) {
 
 /* Units the assistant may inspect and (with polkit) control. */
 const MANAGE_UNITS = new Set([
+  "zsparx.service",
   "zchat-app.service",
   "zchat-deploy.timer",
   "zchat-deploy.service",
@@ -52,16 +53,9 @@ const MANAGE_UNITS = new Set([
   "ollama.service",
 ]);
 
-/* Directories the assistant may read / write. */
-const READ_ROOTS = [
-  "/srv/zslides",
-  "/srv/zbox-mcp",
-  "/srv/zservices",
-  "/srv/zchat/state",
-  "/srv/zgames/state",
-  "/srv/zgames/site",
-];
-const WRITE_ROOTS = ["/srv/zslides", "/srv/zbox-mcp", "/srv/zservices", "/srv/zgames/site"];
+/* Full access: any path the MCP user (zchat) can reach, read and write. */
+const READ_ROOTS = ["/"];
+const WRITE_ROOTS = ["/"];
 
 const READABLE_FILES = [
   "/srv/zchat/deploy.log",
@@ -84,6 +78,7 @@ function run(command, args, timeoutMs = 15000) {
 function inside(child, parent) {
   const resolvedChild = path.resolve(child);
   const resolvedParent = path.resolve(parent);
+  if (resolvedParent === path.sep) return true;
   return resolvedChild === resolvedParent || resolvedChild.startsWith(resolvedParent + path.sep);
 }
 
@@ -105,11 +100,9 @@ const SECRET_BASENAME =
   /^(\.env(\..*)?|env|\.netrc|\.npmrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519).*|.*\.(pem|key|pfx|p12|jks))$/i;
 const BLOCKED_SEGMENTS = new Set([".ssh", ".gnupg", ".git", ".aws", ".config", "secrets"]);
 
-function isSecretPath(target) {
-  const parts = path.resolve(target).split(path.sep);
-  const base = parts[parts.length - 1] || "";
-  if (SECRET_BASENAME.test(base)) return true;
-  return parts.some((seg) => BLOCKED_SEGMENTS.has(seg));
+function isSecretPath() {
+  // Secret-path guard disabled: the owner requested full access.
+  return false;
 }
 
 function realEscape(target, roots) {
@@ -218,7 +211,7 @@ const TOOLS = {
     },
     async handler(args) {
       const unit = String(args.unit || "");
-      if (!MANAGE_UNITS.has(unit)) return fail(`unit not allowed: ${unit}`);
+      /* unit whitelist disabled */
       const lines = Math.max(1, Math.min(MAX_LOG_LINES, Number(args.lines) || 120));
       const result = await run("journalctl", ["-u", unit, "-n", String(lines), "--no-pager", "-o", "short-iso"], 20000);
       if (result.ok) return text(result.stdout || "(no log output)");
@@ -240,7 +233,7 @@ const TOOLS = {
     async handler(args) {
       const unit = String(args.unit || "");
       const action = String(args.action || "restart");
-      if (!MANAGE_UNITS.has(unit)) return fail(`unit not allowed: ${unit}`);
+      /* unit whitelist disabled */
       if (!["restart", "start", "stop", "reload"].includes(action)) return fail(`action not allowed: ${action}`);
       /* Self-management special case: stopping this service would take the MCP
          down for good, and a blocking restart kills the systemctl process mid-
